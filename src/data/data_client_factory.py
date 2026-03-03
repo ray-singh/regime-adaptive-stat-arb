@@ -18,12 +18,12 @@ class DataClientFactory:
     Factory for creating data clients with automatic fallback capabilities.
     
     Usage:
-        # Auto-detect (tries FactSet first, falls back to yfinance)
+        # Auto-detect (uses yfinance by default; uses FactSet only if source="factset")
         client = DataClientFactory.create()
-        
+
         # Explicit provider
         client = DataClientFactory.create(source="factset")
-        
+
         # With custom config
         client = DataClientFactory.create(
             source="auto",
@@ -56,18 +56,7 @@ class DataClientFactory:
             Data client instance (FactSetClient or YFinanceClient)
         """
         if source == "auto":
-            # Try FactSet first if API key is available
-            if os.getenv("FACTSET_API_KEY"):
-                logger.info("FACTSET_API_KEY found, using FactSet as primary data source")
-                try:
-                    return DataClientFactory._create_factset(
-                        cache_dir, retry_attempts, retry_delay, rate_limit_delay, **kwargs
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to initialize FactSet client: {str(e)}")
-                    logger.info("Falling back to yfinance")
-            
-            # Fallback to yfinance
+            # Default to yfinance; only use FactSet if explicitly requested
             logger.info("Using yfinance as data source")
             return DataClientFactory._create_yfinance(
                 cache_dir, retry_attempts, retry_delay, rate_limit_delay, **kwargs
@@ -95,7 +84,7 @@ class DataClientFactory:
         **kwargs
     ):
         """Create FactSet client."""
-        from data.factset_client import FactSetClient
+        from factset_client import FactSetClient
         
         return FactSetClient(
             cache_dir=cache_dir,
@@ -114,7 +103,7 @@ class DataClientFactory:
         **kwargs
     ):
         """Create yfinance client."""
-        from data.yfinance_client import YFinanceClient
+        from yfinance_client import YFinanceClient
         
         return YFinanceClient(
             cache_dir=cache_dir,

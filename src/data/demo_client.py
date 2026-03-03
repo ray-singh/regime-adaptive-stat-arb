@@ -10,8 +10,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.yfinance_client import YFinanceClient
-from data.universe import TOP_200_LIQUID_US_EQUITIES, get_universe, get_sector_tickers
+from yfinance_client import YFinanceClient
+from universe import TOP_200_LIQUID_US_EQUITIES, get_universe, get_sector_tickers
 import pandas as pd
 
 

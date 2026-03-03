@@ -7,10 +7,12 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.factset_client import FactSetClient
-from data.data_client_factory import DataClientFactory
-from data.universe import get_universe
+from factset_client import FactSetClient
+from data_client_factory import DataClientFactory
+from universe import get_universe
+from dotenv import load_dotenv
 
+load_dotenv()
 
 def test_factset_client():
     """Test FactSet client functionality."""

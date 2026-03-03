@@ -10,8 +10,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.data_client_factory import DataClientFactory
-from data.universe import TOP_200_LIQUID_US_EQUITIES, get_sector_tickers
+from data_client_factory import DataClientFactory
+from universe import TOP_200_LIQUID_US_EQUITIES, get_sector_tickers
 
 
 def example_1_auto_client():

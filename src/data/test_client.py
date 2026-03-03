@@ -6,8 +6,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.yfinance_client import YFinanceClient
-from data.universe import get_universe, get_sector_tickers
+from yfinance_client import YFinanceClient
+from universe import get_universe, get_sector_tickers
 
 def test_client():
     print("Testing YFinance Client...")
