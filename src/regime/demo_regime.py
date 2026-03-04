@@ -42,8 +42,11 @@ DEMO_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META",
 REGIME_TICKER = "AAPL"     # use AAPL to showcase regime detection
 PERIOD        = "10y"
 INTERVAL      = "1d"
-PLOTS_DIR     = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                              "..", "data", "plots")
+PLOTS_DIR     = os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+    "data",
+    "plots",
+)
 
 REGIME_COLOR  = {0: "#2ca02c", 1: "#ff7f0e", 2: "#d62728", 3: "#9467bd"}
 REGIME_NAME   = {0: "Bull/Low-Vol", 1: "Neutral", 2: "Bear/High-Vol", 3: "Crisis"}
@@ -177,49 +180,124 @@ def run_pairs_trading(features: dict) -> dict:
 # 4. Plots
 # ──────────────────────────────────────────────────────────────────────────────
 
-def plot_regimes(features, results):
+def plot_regimes(features, results, pairs_result=None):
     os.makedirs(PLOTS_DIR, exist_ok=True)
     feat_df = features[REGIME_TICKER]
-    price_col = "adj_close" if "adj_close" in feat_df.columns else "close"
+    # robust price column selection
+    if "adj_close" in feat_df.columns:
+        price_col = "adj_close"
+    elif "close" in feat_df.columns:
+        price_col = "close"
+    else:
+        price_col = feat_df.columns[0]
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 14), sharex=True)
+    # Rows 0,1,3 share x-axis (DatetimeIndex).
+    # Row 2 (heatmap) is NOT shared — imshow uses integer pixel coords which
+    # would hijack the shared date axis and blank out the other plots.
+    fig, axes = plt.subplots(4, 1, figsize=(14, 14))
     fig.suptitle(f"Regime Detection — {REGIME_TICKER}", fontsize=15, fontweight="bold")
+    # manually link only the date-indexed axes
+    for ax in [axes[1], axes[3]]:
+        ax.sharex(axes[0])
 
     # Price
     ax_price = axes[0]
-    ax_price.plot(feat_df.index, feat_df[price_col], lw=0.8, color="steelblue")
+    ax_price.plot(feat_df.index, feat_df[price_col].values, lw=0.8, color="steelblue")
     ax_price.set_ylabel("Price ($)")
     ax_price.set_title("Price with HMM Regimes")
-    background_regimes(ax_price, results["HMM (3-state)"]["labels"])
+    try:
+        background_regimes(ax_price, results["HMM (3-state)"]["labels"])
+    except Exception:
+        pass
     patches = [mpatches.Patch(color=REGIME_COLOR[r], label=REGIME_NAME[r], alpha=0.6)
                for r in sorted(REGIME_COLOR)]
     ax_price.legend(handles=patches, loc="upper left", fontsize=8)
 
     # Realized vol comparison
     ax_rv = axes[1]
-    ax_rv.plot(feat_df.index, feat_df["rv_20"], lw=0.8, label="rv_20")
+    if "rv_20" in feat_df.columns:
+        ax_rv.plot(feat_df.index, feat_df["rv_20"].values, lw=0.8, label="rv_20")
     ax_rv.set_ylabel("Realized Vol")
     ax_rv.set_title("Realized Vol (20d) with Vol-Threshold Regimes")
-    background_regimes(ax_rv, results["Volatility (3-state)"]["labels"])
+    try:
+        background_regimes(ax_rv, results["Volatility (3-state)"]["labels"])
+    except Exception:
+        pass
 
-    # Regime colours (all 3 detectors as heatmap rows)
+    # Regime comparison heatmap — use pcolormesh with dates on x-axis
     ax_cmp = axes[2]
     names = list(results.keys())
-    data = np.vstack([results[n]["labels"].reindex(feat_df.index).ffill().bfill().values
-                      for n in names])
-    im = ax_cmp.imshow(data, aspect="auto", cmap="RdYlGn_r",
-                       extent=[0, data.shape[1], 0, len(names)],
-                       vmin=0, vmax=3, interpolation="nearest")
-    ax_cmp.set_yticks([0.5, 1.5, 2.5])
-    ax_cmp.set_yticklabels(["K-Means", "Vol", "HMM"])
-    ax_cmp.set_title("Regime Labels Comparison")
-    fig.colorbar(im, ax=ax_cmp, orientation="vertical", pad=0.01, fraction=0.02,
-                 ticks=[0, 1, 2, 3])
+    rows = []
+    for n in names:
+        lab_raw = results[n]["labels"]
+        if isinstance(lab_raw, pd.Series):
+            lab = lab_raw.reindex(feat_df.index).ffill().bfill()
+        else:
+            try:
+                lab = pd.Series(lab_raw, index=feat_df.index).ffill().bfill()
+            except Exception:
+                lab = pd.Series([0] * len(feat_df), index=feat_df.index)
+        rows.append(lab.values)
+    if rows:
+        data = np.vstack(rows).astype(float)
+        # pcolormesh accepts datetime x-axis natively — no integer pixel coords
+        x_edges = np.concatenate([feat_df.index, [feat_df.index[-1] + pd.Timedelta(days=1)]])
+        y_edges = np.arange(len(names) + 1)
+        mesh = ax_cmp.pcolormesh(x_edges, y_edges, data, cmap="RdYlGn_r",
+                                 vmin=0, vmax=3, shading="flat")
+        ax_cmp.set_yticks(np.arange(0.5, len(names), 1))
+        ax_cmp.set_yticklabels(names)
+        ax_cmp.set_title("Regime Labels Comparison (0=Bull, 1=Neutral, 2=Bear)")
+        fig.colorbar(mesh, ax=ax_cmp, orientation="vertical", pad=0.01, fraction=0.02,
+                     ticks=[0, 1, 2, 3])
+    else:
+        ax_cmp.text(0.5, 0.5, "No regime labels available", ha="center", va="center")
 
     # Z-score plot for top pair (if any)
     ax_z = axes[3]
-    ax_z.set_title("(No cointegrated pairs found)" )
-    ax_z.axis("off")
+    # build a wide price matrix from features
+    frames = []
+    for t, fdf in features.items():
+        pc = "adj_close" if "adj_close" in fdf.columns else ("close" if "close" in fdf.columns else fdf.columns[0])
+        s = fdf[pc].rename(t)
+        s.index = pd.to_datetime(fdf["Date"]).dt.tz_localize(None) if "Date" in fdf.columns else s.index
+        frames.append(s)
+    if frames:
+        price_matrix = pd.concat(frames, axis=1).sort_index()
+    else:
+        price_matrix = None
+
+    plotted = False
+    if pairs_result is not None:
+        # prefer signals from run_pairs_trading if available
+        traded = pairs_result.get("traded") if isinstance(pairs_result, dict) else None
+        if traded:
+            first = next(iter(traded.items()))
+            pair_name, data = first
+            sig = data.get("signals")
+            if sig is not None and not sig.empty:
+                ax_z.plot(sig.index, sig["zscore"], lw=0.7, color="steelblue")
+                ax_z.set_title(f"{pair_name} — Z-Score")
+                ax_z.set_ylabel("Z-score")
+                plotted = True
+
+    if not plotted and pairs_result is not None and price_matrix is not None:
+        # fallback: plot the top cointegrated pair if available
+        coin = pairs_result.get("cointegrated") if isinstance(pairs_result, dict) else None
+        if coin is not None and not coin.empty:
+            row = coin.iloc[0]
+            from strategy.pairs_trading import PairsTradingStrategy
+            strat = PairsTradingStrategy(zscore_window=60)
+            spread = strat.compute_spread(price_matrix, row["ticker1"], row["ticker2"], float(row["hedge_ratio"]))
+            z = strat.compute_zscore(spread)
+            ax_z.plot(z.index, z.values, lw=0.7, color="steelblue")
+            ax_z.set_title(f"{row['ticker1']}/{row['ticker2']} — Z-Score")
+            ax_z.set_ylabel("Z-score")
+            plotted = True
+
+    if not plotted:
+        ax_z.set_title("(No cointegrated pairs found)")
+        ax_z.axis("off")
 
     plt.tight_layout()
     out = os.path.join(PLOTS_DIR, "regime_detection.png")
@@ -297,7 +375,7 @@ def main():
 
     # Plots
     print("\n[Plots] Generating…")
-    plot_regimes(features, regime_results)
+    plot_regimes(features, regime_results, pairs_result=pairs_result)
     plot_pairs(pairs_result)
 
     print("\nDone!")

@@ -1,143 +1,81 @@
 # Regime-Adaptive Statistical Arbitrage Platform
 
-A sophisticated trading platform that detects market regimes, identifies statistical arbitrage opportunities, and adapts strategies based on market conditions.
+A working prototype that detects market regimes, finds cointegrated pairs,
+and runs a regime-aware pairs trading backtest with realistic execution costs.
 
-## Features
+## Highlights (what works today)
 
-- **Market Regime Detection**: Automatically identifies different market states (bull, bear, high volatility, low volatility)
-- **Statistical Arbitrage**: Finds and exploits mean-reversion and cointegration opportunities
-- **Adaptive Strategies**: Adjusts trading parameters based on detected regimes
-- **Realistic Backtesting**: Simulates trades with realistic execution costs and slippage
-- **Analytics & Visualization**: Comprehensive performance metrics and visual insights
-- **Multi-Source Data**: FactSet (primary) with yfinance fallback for flexibility
+- Data ingestion: `yfinance` client with caching (used as the default data source).
+- Feature pipeline: per-ticker feature extraction (`ret`, `logret`, `rv_20`, `mom`, z-scores).
+- Regime detection: `HMMRegimeDetector`, `VolatilityRegimeDetector`, `ClusteringRegimeDetector`.
+- Pair selection: Engle–Granger cointegration scanner + half-life filter.
+- Strategy: rolling z-score pairs trading signals with entry/exit/stop rules.
+- Backtester: event-driven engine with `Market/Signal/Order/Fill` events,
+  simulated execution (half-spread + slippage + commission), portfolio accounting, and reporting.
 
-## Project Structure
+Plots and demo scripts are included to reproduce results quickly.
+
+## Project Layout
 
 ```
 regime-adaptive-stat-arb/
 ├── src/
-│   ├── data/              # Data fetching and management
-│   │   ├── factset_client.py       # FactSet API client
-│   │   ├── yfinance_client.py      # Yahoo Finance client (fallback)
-│   │   ├── data_client_factory.py  # Auto-switching factory
-│   │   ├── universe.py             # Stock universe definitions
-│   │   └── test_*.py               # Test scripts
-│   ├── regime/            # Regime detection algorithms
-│   ├── strategy/          # Trading strategies
-│   ├── backtest/          # Backtesting engine
-│   ├── risk/              # Risk management
-│   ├── analytics/         # Performance analytics
-│   └── visualization/     # Charts and dashboards
-├── data/                  # Cached data storage
-├── .env.example           # Environment variable template
-├── requirements.txt       # Python dependencies
+│   ├── data/          # FactSet (dev) + yfinance client, data factory, universe
+│   ├── features/      # featurization utilities
+│   ├── regime/        # HMM / volatility / clustering detectors
+│   ├── strategy/      # pairs trading logic + pair selector
+│   ├── backtest/      # event-driven backtester (execution, portfolio, engine)
+│   └── ...
+├── data/               # cached OHLCV + generated plots
+├── requirements.txt    # Python dependencies
 └── README.md
 ```
 
-## Setup
+## Quickstart (run from the project root)
 
-### 1. Clone and Install Dependencies
+1) Activate the project's virtualenv and install deps:
 
 ```bash
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Keys
-
-Copy the example environment file and add your FactSet API key:
-
-```bash
-cp .env.example .env
-# Edit .env and add your FACTSET_API_KEY
-```
-
-**Note**: If you don't have a FactSet API key, the platform automatically falls back to yfinance (free).
-
-### 3. Test Data Clients
+2) Run the demo (feature extraction → regime detectors → pairs scan → plots):
 
 ```bash
 cd src
-python data/test_factset.py    # Test FactSet + factory pattern
-python data/test_client.py     # Test yfinance fallback
+python -m regime.demo_regime
+# outputs: data/plots/regime_detection.png and data/plots/pairs_trading.png
 ```
 
-## Data Sources
+3) Run the full backtest (train/test split, in-sample pair selection, OOS backtest):
 
-The platform supports multiple data sources with automatic fallback:
-
-- **Primary**: FactSet Prices API - Institutional-grade OHLCV + adjusted close
-- **Fallback**: Yahoo Finance (via yfinance) - Free historical daily OHLCV
-- **Universe**: Top 200 most liquid US equities by average daily volume
-- **History**: 10 years of daily data (configurable)
-
-## Usage
-
-### Auto-Select Data Source (Recommended)
-
-The factory automatically uses FactSet if available, otherwise falls back to yfinance:
-
-```python
-from src.data.data_client_factory import DataClientFactory
-
-# Auto-detect best available source
-client = DataClientFactory.create(source="auto", cache_dir="data/cache")
-df = client.fetch_ticker("AAPL", period="10y")
+```bash
+cd src
+python -m backtest.run_backtest
+# outputs: data/plots/backtest_results.png and console performance summary
 ```
 
-### FactSet Client (Explicit)
+Notes:
+- Scripts should be run from `src/` so module imports resolve correctly.
+- Cached raw OHLCV and computed features are stored under `data/`.
 
-```python
-from src.data.factset_client import FactSetClient
+## Current Roadmap
 
-client = FactSetClient(cache_dir="data/cache")
-df = client.fetch_ticker("AAPL", period="10y")
+- [x] Data ingestion (`yfinance` fallback)
+- [x] Universe definition (200 tickers)
+- [x] Feature pipeline
+- [x] Regime detection (HMM, volatility, clustering)
+- [x] Pair selection (cointegration + half-life)
+- [x] Pairs trading strategy (z-score signals)
+- [x] Event-driven backtester with realistic costs
+- [ ] Risk manager (position sizing, leverage limits)
+- [ ] Periodic pair re-selection and productionization
+- [ ] Analytics dashboard and richer visuals
+- [ ] Unit tests, CI, and packaging
 
-# Adjusted close is included
-print(df[['Date', 'close', 'adj_close']].head())
-```
+## Next steps (recommended)
 
-### YFinance Client (Fallback)
-
-```python
-from src.data.yfinance_client import YFinanceClient
-
-client = YFinanceClient(cache_dir="data/cache")
-df = client.fetch_ticker("AAPL", period="10y")
-```
-
-### Fetch Multiple Tickers
-
-```python
-from src.data.universe import TOP_200_LIQUID_US_EQUITIES
-
-client = DataClientFactory.create(cache_dir="data/cache")
-
-# Fetch all 200 stocks
-df = client.fetch_bulk(
-    tickers=TOP_200_LIQUID_US_EQUITIES,
-    period="10y",
-    show_progress=True
-)
-```
-
-### Get Sector-Specific Data
-
-```python
-from src.data.universe import get_sector_tickers
-
-tech_stocks = get_sector_tickers("Technology")
-df = client.fetch_bulk(tech_stocks, period="5y")
-```
-
-## Roadmap
-
-- [x] Data ingestion from FactSet & Yahoo Finance
-- [x] Stock universe definition (200 liquid US equities)
-- [x] Data client factory with automatic fallback
-- [ ] Regime detection algorithms (HMM, clustering, volatility-based)
-- [ ] Pairs trading strategy
-- [ ] Cointegration-based stat-arb
-- [ ] Backtesting engine with realistic costs
-- [ ] Risk management module
-- [ ] Performance analytics
-- [ ] Web dashboard for visualization
+1. Implement a risk manager that enforces max gross leverage and per-pair sizing per regime.
+2. Add rolling pair re-selection (e.g., monthly/quarterly) to reduce OOS breakdowns.
+3. Reduce execution friction assumptions (lower commission/slippage) when benchmarking realistic broker fees.
