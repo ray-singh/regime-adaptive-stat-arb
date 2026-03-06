@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Regime-Adaptive Statistical Arbitrage — Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to config.yaml and customise as needed.
+# All values shown are defaults.
+
+log_level: INFO
+
+data:
+  tickers:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - NVDA
+    - META
+    - TSLA
+    - JPM
+    - V
+    - UNH
+    - ADBE
+    - AMD
+    - AVGO
+    - CRM
+    - ORCL
+  period: "10y"
+  interval: "1d"
+  cache_dir: "data/cache"
+
+regime:
+  n_states: 3
+  regime_ticker: "AAPL"
+
+pairs:
+  pvalue_threshold: 0.05
+  min_half_life: 5
+  max_half_life: 126
+  max_pairs: 10
+  zscore_window: 60
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 3.5
+  warmup_bars: 60
+
+reselection:
+  enabled: true
+  interval_days: 63        # re-select every ~quarter
+  lookback_days: 504       # 2 years of trailing data
+
+execution:
+  slippage_bps: 5.0
+  spread_bps: 3.0
+  commission_pct: 0.001
+  min_commission: 1.0
+
+risk:
+  max_gross_leverage: 4.0
+  max_net_leverage: 2.0
+  max_pair_notional_pct: 0.20
+  max_ticker_notional_pct: 0.25
+  max_open_pairs: 10
+  drawdown_halt_pct: -0.30
+  drawdown_reduce_pct: -0.15
+  drawdown_scale_factor: 0.50
+
+backtest:
+  initial_capital: 1000000.0
+  train_pct: 0.50
+  target_notional_pct: 0.10
+  verbose: true

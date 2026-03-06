@@ -36,6 +36,9 @@ class BacktestEngine:
     broker : SimulatedBroker
     position_sizer : callable(signal, portfolio, prices) → list[OrderEvent]
         Default: `default_position_sizer` below.
+    risk_manager : optional RiskManager
+        Pre-trade risk gatekeeper. If supplied, every order passes through
+        scale_order() and check_order() before reaching the broker.
     short_rebate_rate : float
         Annual rate passed to Portfolio.accrue_short_rebate each day.
     verbose : bool
@@ -48,6 +51,7 @@ class BacktestEngine:
         portfolio: Portfolio,
         broker: SimulatedBroker,
         position_sizer=None,
+        risk_manager=None,
         short_rebate_rate: float = 0.04,
         verbose: bool = False,
     ):
@@ -55,6 +59,7 @@ class BacktestEngine:
         self.strategy          = strategy
         self.portfolio         = portfolio
         self.broker            = broker
+        self.risk_manager      = risk_manager
         self.position_sizer    = position_sizer or default_position_sizer
         self.short_rebate_rate = short_rebate_rate
         self.verbose           = verbose
@@ -63,6 +68,7 @@ class BacktestEngine:
         self._bars_processed   = 0
         self._signals_fired    = 0
         self._orders_sent      = 0
+        self._orders_rejected  = 0
         self._fills_received   = 0
 
     # -----------------------------------------------------------------------
@@ -98,6 +104,13 @@ class BacktestEngine:
             self.portfolio.mark_to_market(market_event.date, prices)
             self.portfolio.accrue_short_rebate(self.short_rebate_rate)
 
+            # Update risk manager end-of-day
+            if self.risk_manager is not None:
+                self.risk_manager.update(self.portfolio, prices)
+                # Sync regime from strategy if available
+                if hasattr(self.strategy, '_current_regime'):
+                    self.risk_manager.set_regime(self.strategy._current_regime)
+
             self._bars_processed += 1
             if self.verbose and self._bars_processed % 252 == 0:
                 eq = self.portfolio.total_equity(prices)
@@ -110,20 +123,27 @@ class BacktestEngine:
                 )
 
         stats = self.portfolio.performance_stats()
-        logger.info("Backtest complete — %d bars, %d fills", self._bars_processed, self._fills_received)
+        logger.info("Backtest complete — %d bars, %d fills, %d rejected",
+                    self._bars_processed, self._fills_received, self._orders_rejected)
         logger.info("Performance: %s", {k: v for k, v in stats.items() if k in
                     ("cagr_pct", "sharpe_ratio", "max_drawdown_pct", "n_trades")})
 
-        return {
-            "stats":        stats,
-            "equity_curve": self.portfolio.equity_curve(),
-            "trades":       self.portfolio.trades_df(),
-            "fills":        self.broker.fills_df(),
-            "bars":         self._bars_processed,
-            "signals":      self._signals_fired,
-            "orders":       self._orders_sent,
-            "fills_count":  self._fills_received,
+        result = {
+            "stats":          stats,
+            "equity_curve":   self.portfolio.equity_curve(),
+            "trades":         self.portfolio.trades_df(),
+            "fills":          self.broker.fills_df(),
+            "bars":           self._bars_processed,
+            "signals":        self._signals_fired,
+            "orders":         self._orders_sent,
+            "orders_rejected": self._orders_rejected,
+            "fills_count":    self._fills_received,
         }
+
+        if self.risk_manager is not None:
+            result["risk_summary"] = self.risk_manager.summary()
+
+        return result
 
     # -----------------------------------------------------------------------
     # Event handlers
@@ -144,9 +164,20 @@ class BacktestEngine:
 
     def _handle_order(self, event: OrderEvent) -> None:
         prices = self.data_feed.current_prices()
+
+        # Risk management gate
+        if self.risk_manager is not None:
+            event = self.risk_manager.scale_order(event, self.portfolio, prices)
+            if not self.risk_manager.check_order(event, self.portfolio, prices):
+                self._orders_rejected += 1
+                return
+
         fill   = self.broker.execute(event, prices)
         if fill is not None:
             self._event_queue.put(fill)
+            # Register pair as open with risk manager
+            if self.risk_manager is not None and fill.pair_id:
+                self.risk_manager.register_pair(fill.pair_id)
 
     def _handle_fill(self, event: FillEvent) -> None:
         self.portfolio.update_fill(event)

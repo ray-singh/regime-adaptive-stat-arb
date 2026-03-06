@@ -120,12 +120,13 @@ class PairsSelector:
                 "spread_std": round(spread.std(), 4),
             })
 
-        result = (
-            pd.DataFrame(pairs_result)
-            .sort_values("pvalue")
-            .head(max_pairs)
-            .reset_index(drop=True)
-        )
+        result = pd.DataFrame(pairs_result)
+        if not result.empty:
+            result = (
+                result.sort_values("pvalue")
+                .head(max_pairs)
+                .reset_index(drop=True)
+            )
         logger.info(f"Found {len(result)} cointegrated pairs")
         return result
 
