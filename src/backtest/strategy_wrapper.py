@@ -35,6 +35,26 @@ DEFAULT_REGIME_SIZE: dict[int, float] = {
     3: 0.0,    # Crisis          — no new entries
 }
 
+# Regime-adaptive entry z-score thresholds (spec §3.4)
+# Low-vol: tighter threshold (mean-reversion is strong, more opportunities)
+# High-vol: wider threshold (avoid false entries; spread can stay wide longer)
+DEFAULT_REGIME_ENTRY_Z: dict[int, float] = {
+    0: 1.5,   # Bull / Low-Vol  — tighter entry
+    1: 2.0,   # Neutral         — baseline
+    2: 2.5,   # Bear / High-Vol — wider entry (more conservative)
+    3: 4.0,   # Crisis          — effectively block new entries
+}
+
+# Regime-adaptive exit z-score thresholds (spec §3.4)
+# Low-vol: exit close to mean (let trade fully revert)
+# High-vol: exit at partial reversion (take profits early, reduce exposure in turbulent markets)
+DEFAULT_REGIME_EXIT_Z: dict[int, float] = {
+    0: 0.3,   # Bull / Low-Vol  — exit close to mean (full reversion)
+    1: 0.5,   # Neutral         — baseline
+    2: 0.8,   # Bear / High-Vol — exit at partial reversion (lock in gains quickly)
+    3: 1.0,   # Crisis          — exit at any meaningful reversion signal
+}
+
 
 class PairConfig:
     """Data for a single registered pair."""
@@ -85,6 +105,8 @@ class PairsBacktestStrategy:
         regime_detector=None,
         regime_ticker: Optional[str] = None,
         regime_size_map: Optional[dict] = None,
+        regime_entry_z_map: Optional[dict] = None,
+        regime_exit_z_map: Optional[dict] = None,
         warmup_bars: int = 60,
         strategy_id: str = "pairs",
         pair_reselector=None,
@@ -127,8 +149,13 @@ class PairsBacktestStrategy:
         self._regime_detector  = regime_detector
         self._regime_ticker    = regime_ticker or (self._tickers[0] if self._tickers else "SPY")
         self._regime_size_map  = regime_size_map or DEFAULT_REGIME_SIZE
+        self._regime_entry_z_map = regime_entry_z_map or DEFAULT_REGIME_ENTRY_Z
+        self._regime_exit_z_map  = regime_exit_z_map  or DEFAULT_REGIME_EXIT_Z
         self._regime_buf: deque = deque(maxlen=max(zscore_window * 3, 252))
         self._current_regime: int = 1   # start neutral
+
+        # Regime history for analytics (spec §4.4)
+        self._regime_history: list = []  # list of (date, regime_label)
 
         # Pair re-selection
         self._pair_reselector = pair_reselector
@@ -174,6 +201,9 @@ class PairsBacktestStrategy:
         if self._regime_detector is not None:
             self._update_regime(event)
 
+        # Record regime label for analytics (every bar after warmup)
+        self._regime_history.append((event.date, self._current_regime))
+
         # 3. Periodic pair re-selection
         signals = []
         if self._pair_reselector is not None:
@@ -215,21 +245,25 @@ class PairsBacktestStrategy:
         new_dir = None
         cur     = pc.position
 
+        # Regime-adaptive thresholds (spec §3.4)
+        entry_z_eff = self._regime_entry_z_map.get(self._current_regime, pc.entry_z)
+        exit_z_eff  = self._regime_exit_z_map.get(self._current_regime, pc.exit_z)
+
         # Exit / stop
         if cur != 0:
-            if abs(z) < pc.exit_z or abs(z) > pc.stop_z:
+            if abs(z) < exit_z_eff or abs(z) > pc.stop_z:
                 new_dir = "flat"
 
         if new_dir is None:
-            # Entry
+            # Entry — use regime-adaptive entry threshold
             if cur == 0:
                 regime_scale = self._regime_size_map.get(self._current_regime, 1.0)
                 if regime_scale == 0.0:
                     return None      # regime blocks new entries
 
-                if z < -pc.entry_z:
+                if z < -entry_z_eff:
                     new_dir = "long_spread"
-                elif z > pc.entry_z:
+                elif z > entry_z_eff:
                     new_dir = "short_spread"
 
         if new_dir is None and cur == pc.position:
@@ -367,6 +401,13 @@ class PairsBacktestStrategy:
 
         logger.info("Post-reselection: %d active pairs", len(self._pairs))
         return signals
+
+    def get_regime_history(self) -> pd.Series:
+        """Return regime label per trading bar as a Series (for analytics/plotting)."""
+        if not self._regime_history:
+            return pd.Series(dtype=int)
+        dates, labels = zip(*self._regime_history)
+        return pd.Series(list(labels), index=list(dates), name="regime", dtype=int)
 
     def _build_price_history_df(self) -> pd.DataFrame:
         """Build a wide price DataFrame from the internal price buffers."""

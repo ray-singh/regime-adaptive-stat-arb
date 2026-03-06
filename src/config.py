@@ -46,6 +46,12 @@ class PairsConfig:
     exit_z: float = 0.5
     stop_z: float = 3.5
     warmup_bars: int = 60
+    # Regime-adaptive z-score thresholds (spec §3.4)
+    # Keys: regime label (0=low-vol, 1=neutral, 2=high-vol, 3=crisis)
+    # Low-vol: tighter entry (richer mean-reversion), High-vol: wider entry (fewer false signals)
+    regime_entry_z: dict = field(default_factory=lambda: {0: 1.5, 1: 2.0, 2: 2.5, 3: 4.0})
+    # Low-vol: exit close to mean, High-vol: exit earlier to lock in partial gains
+    regime_exit_z: dict = field(default_factory=lambda: {0: 0.3, 1: 0.5, 2: 0.8, 3: 1.0})
 
 
 @dataclass

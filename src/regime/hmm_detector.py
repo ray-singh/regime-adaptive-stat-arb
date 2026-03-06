@@ -47,13 +47,15 @@ class HMMRegimeDetector(BaseRegimeDetector):
         random_state: int = 42,
     ):
         self.n_states = n_states
-        self.feature_cols = feature_cols or ["logret", "rv_20"]
+        # mom_20 is added so the HMM can distinguish trending from mean-reverting markets (spec §3.3)
+        self.feature_cols = feature_cols or ["logret", "rv_20", "mom_20"]
         self.n_iter = n_iter
         self.random_state = random_state
 
         self._model: Optional[GaussianHMM] = None
         self._scaler = StandardScaler()
         self._label_map: dict = {}   # raw HMM state -> sorted state
+        self._active_features: list = []  # columns actually used during fit
 
     # ------------------------------------------------------------------
     # Public API
@@ -87,7 +89,8 @@ class HMMRegimeDetector(BaseRegimeDetector):
         X = self._prepare(df, fit_scaler=False)
         raw_states = self._model.predict(X)
         mapped = np.array([self._label_map[s] for s in raw_states])
-        idx = df.dropna(subset=self.feature_cols).index
+        active = self._active_features or self.feature_cols
+        idx = df.dropna(subset=[c for c in active if c in df.columns]).index
         return pd.Series(mapped, index=idx, name="regime", dtype=int)
 
     @property
@@ -134,15 +137,27 @@ class HMMRegimeDetector(BaseRegimeDetector):
         if self._model is None:
             raise RuntimeError("Call fit() first")
         X = self._prepare(df, fit_scaler=False)
-        return self._model.score(X) / len(X)
+        return self._model.score(X) / max(len(X), 1)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     def _prepare(self, df: pd.DataFrame, fit_scaler: bool) -> np.ndarray:
-        clean = df.dropna(subset=self.feature_cols)
-        X = clean[self.feature_cols].values.astype(float)
+        # Use only columns that are present in this df (graceful fallback)
+        avail = [c for c in self.feature_cols if c in df.columns]
+        if not avail:
+            raise ValueError(
+                f"None of the required feature columns {self.feature_cols} found in DataFrame. "
+                f"Available columns: {list(df.columns)}"
+            )
+        if fit_scaler:
+            self._active_features = avail  # remember exactly which cols were used at fit time
+        else:
+            # Use the same columns that were seen during fit
+            avail = self._active_features if self._active_features else avail
+        clean = df.dropna(subset=avail)
+        X = clean[avail].values.astype(float)
         if fit_scaler:
             X = self._scaler.fit_transform(X)
         else:

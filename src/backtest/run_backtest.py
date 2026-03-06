@@ -149,6 +149,60 @@ def select_pairs(wide_prices: pd.DataFrame, end_date: pd.Timestamp,
     return pairs_df
 
 
+def compute_regime_performance(
+    equity_curve: pd.Series,
+    regime_series: pd.Series,
+    trades_df: pd.DataFrame,
+    risk_free_rate: float = 0.05,
+) -> pd.DataFrame:
+    """Per-regime performance breakdown (spec §4.4).
+
+    Returns a DataFrame indexed by regime label with columns:
+        Days, Ann Return %, Sharpe, Ann Vol %, Trades
+    """
+    import math
+    from regime.base import REGIME_LABELS
+
+    daily_rets = equity_curve.pct_change().dropna()
+    regimes    = regime_series.reindex(daily_rets.index, method="ffill").dropna()
+    common     = daily_rets.index.intersection(regimes.index)
+    daily_rets = daily_rets[common]
+    regimes    = regimes[common]
+
+    rows = []
+    for r in sorted(regimes.unique()):
+        mask   = regimes == r
+        r_rets = daily_rets[mask]
+        if len(r_rets) < 5:
+            continue
+
+        n_days  = int(mask.sum())
+        ann_ret = r_rets.mean() * 252 * 100
+        ann_vol = r_rets.std() * math.sqrt(252) * 100
+        daily_rf = risk_free_rate / 252
+        sharpe   = (
+            (r_rets.mean() - daily_rf) / r_rets.std() * math.sqrt(252)
+            if r_rets.std() > 0 else float("nan")
+        )
+
+        # Count fills (rows in trades_df) that fall on dates in this regime period
+        n_trades = 0
+        if not trades_df.empty:
+            regime_date_set = set(regimes[mask].index)
+            n_trades = int(sum(1 for d in trades_df.index if d in regime_date_set))
+
+        rows.append({
+            "Regime":       REGIME_LABELS.get(int(r), f"Regime {r}"),
+            "Days":         n_days,
+            "Ann Return %": round(ann_ret, 2),
+            "Sharpe":       round(sharpe, 2),
+            "Ann Vol %":    round(ann_vol, 2),
+            "Trades":       n_trades,
+        })
+
+    return pd.DataFrame(rows).set_index("Regime") if rows else pd.DataFrame()
+
+
 def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
     print("=" * 64)
     print("  Regime-Adaptive Pairs Backtest")
@@ -241,6 +295,8 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
         stop_z=cfg.pairs.stop_z,
         regime_detector=regime_detector,
         regime_ticker=cfg.regime.regime_ticker,
+        regime_entry_z_map=cfg.pairs.regime_entry_z,
+        regime_exit_z_map=cfg.pairs.regime_exit_z,
         warmup_bars=cfg.pairs.warmup_bars,
         pair_reselector=pair_reselector,
         all_tickers=cfg.data.tickers,
@@ -256,6 +312,14 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
     )
 
     results = engine.run()
+    results["selected_pairs"] = pairs_df.to_dict("records")
+    results["pair_reselection_count"] = (
+        pair_reselector.reselection_count if pair_reselector is not None else 0
+    )
+
+    # Collect regime history for per-regime analytics (spec §4.4)
+    regime_series = strategy.get_regime_history()
+    results["regime_series"] = regime_series
 
     # 5. Report
     print("\n[5/5] Performance Summary")
@@ -275,6 +339,19 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
 
     if pair_reselector:
         print(f"\n  Pair Re-selections: {pair_reselector.reselection_count}")
+
+    # Per-regime performance breakdown (spec §4.4)
+    if not regime_series.empty:
+        regime_perf = compute_regime_performance(
+            equity_curve=results["equity_curve"],
+            regime_series=regime_series,
+            trades_df=results.get("trades", pd.DataFrame()),
+        )
+        results["regime_performance"] = regime_perf
+        if not regime_perf.empty:
+            print("\n  Regime Performance Breakdown:")
+            print("-" * 48)
+            print(regime_perf.to_string())
 
     # Plots
     _make_plots(results, pairs_df, cfg)
@@ -299,10 +376,24 @@ def _make_plots(results: dict, pairs_df: pd.DataFrame, cfg: PlatformConfig) -> N
     fig = plt.figure(figsize=(14, 12))
     gs  = gridspec.GridSpec(4, 2, figure=fig, hspace=0.50, wspace=0.3)
 
-    # 1. Equity curve
+    # 1. Equity curve (with regime shading — spec §4.1)
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(eq.index, eq.values / 1e6, lw=1.2, color="steelblue")
+    ax1.plot(eq.index, eq.values / 1e6, lw=1.2, color="steelblue", zorder=2)
     ax1.axhline(cfg.backtest.initial_capital / 1e6, ls="--", color="grey", lw=0.8)
+
+    # Draw regime color bands in background
+    regime_series = results.get("regime_series")
+    if regime_series is not None and not regime_series.empty:
+        _regime_colors = {0: "lightgreen", 1: "lightyellow", 2: "lightsalmon", 3: "lightcoral"}
+        _regime_alphas = {0: 0.30, 1: 0.18, 2: 0.28, 3: 0.38}
+        changes = regime_series.ne(regime_series.shift()).cumsum()
+        for _, grp in regime_series.groupby(changes):
+            r     = int(grp.iloc[0])
+            color = _regime_colors.get(r, "lightgrey")
+            alpha = _regime_alphas.get(r, 0.2)
+            ax1.axvspan(grp.index[0], grp.index[-1],
+                        facecolor=color, alpha=alpha, zorder=0)
+
     ax1.set_title(
         f"Equity Curve — Sharpe {stats.get('sharpe_ratio','?'):.2f} | "
         f"CAGR {stats.get('cagr_pct','?'):.1f}% | "
@@ -352,15 +443,33 @@ def _make_plots(results: dict, pairs_df: pd.DataFrame, cfg: PlatformConfig) -> N
     ax5.set_xticks([])
     ax5.set_yticks([])
 
-    # 6. Trade count by pair
+    # 6. Regime performance — Sharpe by regime (spec §4.4)
     ax6 = fig.add_subplot(gs[3, 1])
-    if not trades.empty and "pair_id" in trades.columns:
+    regime_perf = results.get("regime_performance")
+    if regime_perf is not None and not regime_perf.empty and "Sharpe" in regime_perf.columns:
+        colors = ["mediumseagreen" if v >= 0 else "tomato" for v in regime_perf["Sharpe"]]
+        regime_perf["Sharpe"].plot.barh(ax=ax6, color=colors, edgecolor="white")
+        ax6.axvline(0, color="black", lw=0.8)
+        ax6.set_title("Sharpe Ratio by Regime")
+        ax6.set_xlabel("Sharpe Ratio")
+        # Annotate with trade counts
+        for i, (idx, row) in enumerate(regime_perf.iterrows()):
+            ax6.text(
+                ax6.get_xlim()[0] + 0.02,
+                i,
+                f"  n={row['Trades']}",
+                va="center",
+                fontsize=8,
+                color="black",
+            )
+    elif not trades.empty and "pair_id" in trades.columns:
+        # Fallback: trades per pair
         pair_counts = trades["pair_id"].value_counts().head(10)
         pair_counts.plot.barh(ax=ax6, color="steelblue", edgecolor="white")
         ax6.set_title("Trades per Pair (top 10)")
         ax6.set_xlabel("# Trades")
     else:
-        ax6.set_title("Trades per Pair")
+        ax6.set_title("Regime Performance")
         ax6.set_xticks([])
         ax6.set_yticks([])
 

@@ -84,6 +84,28 @@ Notes:
 - Cached raw OHLCV and computed features are stored under `data/`.
 - Copy `config.example.yaml` to `config.yaml` and customise as needed.
 
+## Dashboard (React + Flask)
+
+An interactive dashboard is available under `dashboard/`.
+
+Run backend:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+python dashboard/backend/app.py
+```
+
+Run frontend (new terminal):
+
+```bash
+cd dashboard/frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
 ## Architecture
 
 ```

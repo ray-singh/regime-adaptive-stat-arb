@@ -236,24 +236,29 @@ class PairsTradingStrategy:
                 pos = 0
                 continue
 
-            # Exit / stop conditions first
+            # Check regime at this timestep — if regime filter is active, block new entries
+            # (but always allow exits to avoid being locked in a losing position)
+            in_active_regime = True
+            if regime_labels is not None and active_regimes is not None:
+                try:
+                    r = regime_labels[zscore.index[i]]
+                    in_active_regime = r in active_regimes
+                except (KeyError, TypeError):
+                    in_active_regime = True  # unknown regime → allow trading
+
+            # Exit / stop conditions (always evaluated regardless of regime)
             if pos != 0:
                 if abs(z) < self.exit_z or abs(z) > self.stop_z:
                     pos = 0
 
-            # Entry conditions
-            if pos == 0:
+            # Entry conditions (gated by regime)
+            if pos == 0 and in_active_regime:
                 if z < -self.entry_z:
                     pos = 1    # long spread
                 elif z > self.entry_z:
                     pos = -1   # short spread
 
             position.iloc[i] = pos
-
-        # Regime filter: only trade in active_regimes
-        if regime_labels is not None and active_regimes is not None:
-            mask = regime_labels.reindex(position.index).isin(active_regimes)
-            position = position.where(mask.fillna(False), 0)
 
         # P&L: long spread = long t1 + short t2, scaled by hedge ratio
         pnl = position.shift(1) * (ret1 - hedge_ratio * ret2)
