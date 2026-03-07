@@ -29,6 +29,11 @@ export async function getTrades(limit = 200) {
   return response.json();
 }
 
+export async function getTradesWithPnL(limit = 500) {
+  const response = await fetch(`${API_BASE}/api/trades-pnl?limit=${limit}`);
+  return response.json();
+}
+
 export async function getPairs() {
   const response = await fetch(`${API_BASE}/api/pairs`);
   return response.json();

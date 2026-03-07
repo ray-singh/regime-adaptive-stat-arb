@@ -202,6 +202,88 @@ def create_app() -> Flask:
             pairs_data = store.last_result.get("selected_pairs", [])
         return jsonify({"ok": True, "pairs": _to_jsonable(pairs_data)})
 
+    @app.get("/api/trades-pnl")
+    def trades_with_pnl() -> Any:
+        """Return trades enriched with per-leg cashflow and closed round-trip PnL grouping."""
+        with store.lock:
+            if store.last_result is None:
+                return jsonify({"ok": False, "error": "No backtest run yet"}), 404
+            trades_df = store.last_result.get("trades")
+
+        if trades_df is None:
+            return jsonify({"ok": True, "trades": [], "closedTrades": []})
+
+        try:
+            import pandas as pd
+            df = trades_df.copy()
+            # if date is in the index, reset it to a column
+            if hasattr(df, "index") and (getattr(df.index, "name", None) == "date" or "date" in (df.index.names or [])):
+                df = df.reset_index()
+            # Ensure columns exist
+            for c in ["date", "pair_id", "quantity", "fill_price", "commission"]:
+                if c not in df.columns:
+                    df[c] = None
+
+            if "date" in df.columns:
+                df = df.sort_values(by="date").reset_index(drop=True)
+            else:
+                df = df.reset_index().sort_values(by="index").reset_index(drop=True)
+
+            enriched = []
+            closed = []
+            round_id = 0
+
+            # group by pair_id and detect round-trip closures when running_qty returns to zero
+            for pair, grp in df.groupby("pair_id", sort=False):
+                running_qty = 0.0
+                acc_cash = 0.0
+                start_date = None
+                legs = []
+                for _, row in grp.iterrows():
+                    qty = float(row.get("quantity") or 0)
+                    price = float(row.get("fill_price") or 0)
+                    commission = float(row.get("commission") or 0)
+                    cash_flow = -qty * price - commission
+                    if start_date is None:
+                        start_date = row.get("date")
+                    running_qty += qty
+                    acc_cash += cash_flow
+                    legs.append({
+                        "date": str(row.get("date")),
+                        "ticker": row.get("ticker"),
+                        "quantity": qty,
+                        "fill_price": price,
+                        "commission": commission,
+                        "cash_flow": float(cash_flow),
+                        "pair_id": pair,
+                    })
+
+                    # Record enriched leg (will attach roundtrip id when closed)
+                    enriched.append({**legs[-1], "roundtrip_id": round_id if running_qty == 0 else None})
+
+                    if abs(running_qty) < 1e-9:
+                        # Closed round-trip
+                        end_date = row.get("date")
+                        realized_pnl = float(acc_cash)
+                        closed.append({
+                            "roundtrip_id": round_id,
+                            "pair_id": pair,
+                            "start_date": str(start_date),
+                            "end_date": str(end_date),
+                            "realized_pnl": realized_pnl,
+                            "legs": len(legs),
+                        })
+                        round_id += 1
+                        # reset
+                        running_qty = 0.0
+                        acc_cash = 0.0
+                        start_date = None
+                        legs = []
+
+            return jsonify({"ok": True, "trades": _to_jsonable(enriched), "closedTrades": _to_jsonable(closed)})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
     @app.get("/api/regime")
     def regime() -> Any:
         """Return per-bar regime label series (spec §4.1 — regime timeline)."""

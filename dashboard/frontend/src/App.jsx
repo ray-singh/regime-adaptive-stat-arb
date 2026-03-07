@@ -25,6 +25,7 @@ import {
   getRollingSharpe,
   getSummary,
   getTrades,
+  getTradesWithPnL,
   runBacktest,
 } from "./api";
 
@@ -58,6 +59,18 @@ function formatDateLabel(dateString) {
 
 function fmt(n, decimals = 2) {
   return Number(n ?? 0).toFixed(decimals);
+}
+function formatCurrency(n) {
+  if (n == null || Number.isNaN(Number(n))) return "";
+  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function buildLegsSummary(legs = []) {
+  try {
+    return legs.map((l) => `${l.ticker}: ${Number(l.quantity).toFixed(2)} @ ${Number(l.fill_price).toFixed(2)}`).join("; ");
+  } catch (e) {
+    return "";
+  }
 }
 
 // ── Small components ─────────────────────────────────────────────────────────
@@ -104,6 +117,7 @@ export default function App() {
   const [drawdown,         setDrawdown]         = useState([]);
   const [rollingSharpe,    setRollingSharpe]    = useState([]);
   const [trades,           setTrades]           = useState([]);
+  const [closedTrades,     setClosedTrades]     = useState([]);
   const [pairs,            setPairs]            = useState([]);
   const [regimeSeries,     setRegimeSeries]     = useState([]);
   const [regimePerf,       setRegimePerf]       = useState([]);
@@ -117,7 +131,7 @@ export default function App() {
   const [error,    setError]    = useState("");
 
   const refreshData = async () => {
-    const [h, s, e, dd, rs, t, p, reg, rp] = await Promise.all([
+    const [h, s, e, dd, rs, t, p, reg, rp, tp] = await Promise.all([
       getHealth(),
       getSummary().catch(() => ({ ok: false })),
       getEquity().catch(() => ({ ok: false, equity: [] })),
@@ -134,7 +148,12 @@ export default function App() {
     if (e.ok)   setEquity(e.equity || []);
     if (dd.ok)  setDrawdown(dd.drawdown || []);
     if (rs.ok)  setRollingSharpe(rs.rollingSharpe || []);
-    if (t.ok)   setTrades(t.trades || []);
+      if (t.ok)   setTrades(t.trades || []);
+      // trades with PnL
+      if (tp.ok)  {
+        setTrades(tp.trades || []);
+        setClosedTrades(tp.closedTrades || []);
+      }
     if (p.ok)   setPairs(p.pairs || []);
     if (reg.ok) setRegimeSeries(reg.regime || []);
     if (rp.ok)  setRegimePerf(rp.regimePerformance || []);
@@ -453,25 +472,73 @@ export default function App() {
                   <th>Qty</th>
                   <th>Price</th>
                   <th>Commission</th>
+                  <th>Round PnL</th>
                 </tr>
               </thead>
               <tbody>
-                {trades.slice(-30).reverse().map((row, idx) => (
-                  <tr key={`${row.date}-${row.ticker}-${idx}`}>
-                    <td>{formatDateLabel(row.date)}</td>
-                    <td>{row.pair_id}</td>
-                    <td>{row.ticker}</td>
-                    <td style={{ color: Number(row.quantity) > 0 ? "#51cf66" : "#ff8fa3" }}>
-                      {fmt(row.quantity, 2)}
-                    </td>
-                    <td>{fmt(row.fill_price, 2)}</td>
-                    <td>{fmt(row.commission, 2)}</td>
-                  </tr>
-                ))}
+                  {trades.slice(-30).reverse().map((row, idx) => {
+                    // find closed trade PnL if available
+                    const rt = row.roundtrip_id;
+                    const closed = rt != null ? closedTrades.find((c) => c.roundtrip_id === rt) : null;
+                    return (
+                      <tr key={`${row.date}-${row.ticker}-${idx}`}>
+                        <td>{formatDateLabel(row.date)}</td>
+                        <td>{row.pair_id}</td>
+                        <td>{row.ticker}</td>
+                        <td style={{ color: Number(row.quantity) > 0 ? "#51cf66" : "#ff8fa3" }}>
+                          {fmt(row.quantity, 2)}
+                        </td>
+                        <td>{fmt(row.fill_price, 2)}</td>
+                        <td>{fmt(row.commission, 2)}</td>
+                        <td
+                          style={{ color: closed && closed.realized_pnl >= 0 ? "#51cf66" : "#ff6b6b" }}
+                          title={closed ? `Round-trip PnL: ${formatCurrency(closed.realized_pnl)}\nStart: ${formatDateLabel(closed.start_date)}\nEnd: ${formatDateLabel(closed.end_date)}\nLegs: ${buildLegsSummary(closed.legs)}` : ""}
+                        >
+                          {closed ? formatCurrency(closed.realized_pnl) : ""}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
         </article>
+      </section>
+
+      {/* ── Closed Round-Trips Panel ── */}
+      <section className="card table-card full-width closed-trades-panel">
+        <h3>Closed Round-Trips</h3>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Round ID</th>
+                <th>Pair</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>PnL</th>
+                <th>Duration (d)</th>
+                <th>Legs</th>
+              </tr>
+            </thead>
+            <tbody>
+              {closedTrades.slice().sort((a, b) => new Date(b.end_date) - new Date(a.end_date)).slice(0, 200).map((c, idx) => {
+                const duration = c.start_date && c.end_date ? Math.round((new Date(c.end_date) - new Date(c.start_date)) / (1000 * 60 * 60 * 24)) : "-";
+                return (
+                  <tr key={`${c.roundtrip_id}-${idx}`} title={`Legs: ${buildLegsSummary(c.legs)}`}>
+                    <td>{c.roundtrip_id}</td>
+                    <td>{c.pair_id}</td>
+                    <td>{formatDateLabel(c.start_date)}</td>
+                    <td>{formatDateLabel(c.end_date)}</td>
+                    <td style={{ color: c.realized_pnl >= 0 ? "#51cf66" : "#ff6b6b" }}>{formatCurrency(c.realized_pnl)}</td>
+                    <td>{duration}</td>
+                    <td>{(c.legs || []).length}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {/* ── Footer ── */}

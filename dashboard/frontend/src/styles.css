@@ -333,3 +333,17 @@ th {
     flex-direction: column;
   }
 }
+
+/* Closed round-trips panel tweaks */
+.closed-trades-panel .table-wrap {
+  max-height: 360px;
+}
+.closed-trades-panel table tbody tr:hover {
+  background: rgba(255,255,255,0.02);
+  cursor: default;
+}
+.closed-trades-panel th:nth-child(5),
+.closed-trades-panel td:nth-child(5) {
+  text-align: right;
+  padding-right: 18px;
+}
