@@ -1,13 +1,14 @@
 :root {
-  --bg-1: #0e1b2a;
-  --bg-2: #10293f;
-  --panel: rgba(8, 22, 36, 0.85);
-  --panel-2: rgba(12, 33, 53, 0.92);
-  --ink: #eef9ff;
-  --muted: #9ab8cc;
-  --accent: #63e6be;
-  --accent-2: #ff8fa3;
-  --warn: #ffd166;
+  /* Bloomberg-esque palette: dark graphite + high-contrast yellow accent */
+  --bg-1: #071017; /* deep ink */
+  --bg-2: #0b1620; /* slightly lighter */
+  --panel: rgba(6, 12, 18, 0.90);
+  --panel-2: rgba(10, 18, 26, 0.94);
+  --ink: #e6eef6;
+  --muted: #98a6b3;
+  --accent: #ffb900; /* Bloomberg yellow */
+  --accent-2: #ffd166;
+  --warn: #ffb900;
   --danger: #ff6b6b;
 }
 
@@ -847,4 +848,66 @@ th {
   .slide-narrative p,
   .slide-section-label { color: #444 !important; }
   .regime-strip-seg { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  /* ========================= Bloomberg-esque overrides ========================= */
+
+  /* compact typography and denser spacing */
+  body { font-size: 14px; }
+
+  /* compact hero */
+  .hero-panel { padding: 12px 14px; align-items: center; }
+  .hero-panel .subtitle { color: var(--muted); font-size: 0.88rem; }
+
+  /* action buttons: bright yellow primary, compact */
+  .run-button { background: var(--accent); color: #071017; border-radius: 4px; padding: 7px 12px; }
+  .ghost-button { background: transparent; color: var(--muted); border: 1px solid rgba(255,255,255,0.04); padding: 6px 10px; }
+
+  /* controls: tighter inputs */
+  .controls label { font-size: 0.78rem; color: var(--muted); }
+  .controls input[type="number"], .controls select { padding: 6px 8px; font-size: 0.9rem; }
+
+  /* KPI style: small chips with numeric focus */
+  .kpi-card { display: flex; flex-direction: column; align-items: flex-start; padding: 8px 10px; }
+  .kpi-label { font-size: 0.72rem; color: var(--muted); }
+  .kpi-value { font-size: 1.05rem; font-weight: 800; color: var(--ink); }
+
+  /* tables: dense, high-contrast headers */
+  table { font-size: 0.78rem; }
+  th { background: rgba(0,0,0,0.06); color: var(--muted); font-weight: 700; }
+  td { color: var(--ink); }
+
+  /* cards and panels: subtle borders, smaller radius */
+  .card, .control-grid, .chart-card, .table-card { border-radius: 6px; border: 1px solid rgba(255,255,255,0.04); }
+
+  /* KPI badges in header */
+  .stat-badge { border-radius: 6px; padding: 4px 8px; font-size: 0.75rem; }
+
+  /* regime legend compact */
+  .regime-dot { font-size: 0.72rem; color: var(--muted); }
+  .regime-dot::before { width: 9px; height: 9px; }
+
+  /* HMM matrix: more conservative neutral palette */
+  .matrix-table th, .matrix-table td { padding: 6px 8px; font-size: 0.78rem; }
+  .matrix-table .matrix-diag { outline: 1px solid rgba(255,185,0,0.12); }
+
+  /* Scenario cards: flatter, compact */
+  .scenario-card { border-radius: 8px; padding: 10px 12px; min-width: 150px; }
+  .scenario-card .scenario-name { font-size: 0.88rem; }
+
+  /* Annotated timeline: compact markers */
+  .anno-event { padding: 6px 8px; min-width: 80px; }
+  .anno-label { font-size: 0.78rem; }
+
+  /* Slide modal: print-friendly, high-contrast text */
+  .slide-modal { max-width: 900px; padding: 28px; }
+  .slide-kpi-value { font-size: 1.25rem; }
+
+  /* small screens adjustments */
+  @media (max-width: 760px) {
+    .controls { grid-template-columns: 1fr; }
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .slide-kpi-row { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* end overrides */
 }
