@@ -13,6 +13,7 @@ import {
   ResponsiveContainer,
   Tooltip,
   XAxis,
+  Brush,
   YAxis,
 } from "recharts";
 import {
@@ -24,7 +25,6 @@ import {
   getRegimePerformance,
   getRollingSharpe,
   getSummary,
-  getTrades,
   getTradesWithPnL,
   runBacktest,
 } from "./api";
@@ -129,18 +129,19 @@ export default function App() {
   });
   const [running,  setRunning]  = useState(false);
   const [error,    setError]    = useState("");
+  const [chartRange, setChartRange] = useState({ start: null, end: null });
 
   const refreshData = async () => {
-    const [h, s, e, dd, rs, t, p, reg, rp, tp] = await Promise.all([
+    const [h, s, e, dd, rs, p, reg, rp, tp] = await Promise.all([
       getHealth(),
       getSummary().catch(() => ({ ok: false })),
       getEquity().catch(() => ({ ok: false, equity: [] })),
       getDrawdown().catch(() => ({ ok: false, drawdown: [] })),
       getRollingSharpe(60).catch(() => ({ ok: false, rollingSharpe: [] })),
-      getTrades(120).catch(() => ({ ok: false, trades: [] })),
       getPairs().catch(() => ({ ok: false, pairs: [] })),
       getRegime().catch(() => ({ ok: false, regime: [] })),
       getRegimePerformance().catch(() => ({ ok: false, regimePerformance: [] })),
+      getTradesWithPnL(500).catch(() => ({ ok: false, trades: [], closedTrades: [] }))
     ]);
 
     setHealth(h);
@@ -148,12 +149,10 @@ export default function App() {
     if (e.ok)   setEquity(e.equity || []);
     if (dd.ok)  setDrawdown(dd.drawdown || []);
     if (rs.ok)  setRollingSharpe(rs.rollingSharpe || []);
-      if (t.ok)   setTrades(t.trades || []);
-      // trades with PnL
-      if (tp.ok)  {
-        setTrades(tp.trades || []);
-        setClosedTrades(tp.closedTrades || []);
-      }
+    if (tp.ok)  {
+      setTrades(tp.trades || []);
+      setClosedTrades(tp.closedTrades || []);
+    }
     if (p.ok)   setPairs(p.pairs || []);
     if (reg.ok) setRegimeSeries(reg.regime || []);
     if (rp.ok)  setRegimePerf(rp.regimePerformance || []);
@@ -216,6 +215,14 @@ export default function App() {
     bands.push({ start: cur.date, end: regimeSeries[regimeSeries.length - 1].date, regime: cur.value });
     return bands;
   }, [regimeSeries]);
+
+  const closedTradesById = useMemo(() => {
+    const m = new Map();
+    for (const c of closedTrades) {
+      if (c?.roundtrip_id != null) m.set(c.roundtrip_id, c);
+    }
+    return m;
+  }, [closedTrades]);
 
   return (
     <main className="app-shell">
@@ -297,7 +304,7 @@ export default function App() {
         <ResponsiveContainer width="100%" height={300}>
           <ComposedChart data={equityRegimeData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-            <XAxis dataKey="date" tickFormatter={formatDateLabel} hide />
+            <XAxis dataKey="date" tickFormatter={formatDateLabel} />
             <YAxis tickFormatter={(v) => `$${(v / 1_000_000).toFixed(2)}M`} width={72} />
             <Tooltip
               labelFormatter={formatDateLabel}
@@ -319,8 +326,30 @@ export default function App() {
               dot={false}
               activeDot={{ r: 4 }}
             />
+            <Brush
+              dataKey="date"
+              height={28}
+              stroke="#8884d8"
+              travellerWidth={10}
+              onChange={(range) => {
+                try {
+                  if (!range) return;
+                  const startIndex = range.startIndex ?? range.startIndex === 0 ? range.startIndex : null;
+                  const endIndex = range.endIndex ?? range.endIndex === 0 ? range.endIndex : null;
+                  if (startIndex == null || endIndex == null) return;
+                  const start = equityRegimeData[startIndex]?.date ?? null;
+                  const end = equityRegimeData[endIndex]?.date ?? null;
+                  setChartRange({ start, end });
+                } catch (e) {
+                  // ignore brush errors
+                }
+              }}
+            />
           </ComposedChart>
         </ResponsiveContainer>
+        {chartRange.start && chartRange.end ? (
+          <div className="chart-range">Range: {formatDateLabel(chartRange.start)} — {formatDateLabel(chartRange.end)}</div>
+        ) : null}
         {/* Lightweight regime band strip below chart */}
         {regimeBands.length > 0 && (
           <div className="regime-strip" aria-label="Regime band strip">
@@ -479,7 +508,7 @@ export default function App() {
                   {trades.slice(-30).reverse().map((row, idx) => {
                     // find closed trade PnL if available
                     const rt = row.roundtrip_id;
-                    const closed = rt != null ? closedTrades.find((c) => c.roundtrip_id === rt) : null;
+                    const closed = rt != null ? closedTradesById.get(rt) : null;
                     return (
                       <tr key={`${row.date}-${row.ticker}-${idx}`}>
                         <td>{formatDateLabel(row.date)}</td>

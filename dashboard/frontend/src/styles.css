@@ -255,6 +255,13 @@ th {
   margin: 0;
 }
 
+.chart-range {
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+}
+
 /* ── Regime legend dots ── */
 .regime-legend {
   display: flex;

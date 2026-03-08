@@ -27,6 +27,7 @@ class BacktestStore:
     running: bool = False
     last_error: Optional[str] = None
     last_result: Optional[dict[str, Any]] = None
+    cache: dict[str, Any] = field(default_factory=dict)
 
 
 store = BacktestStore()
@@ -139,12 +140,14 @@ def create_app() -> Flask:
                 return jsonify({"ok": False, "error": "Backtest already running"}), 409
             store.running = True
             store.last_error = None
+            store.cache.clear()
 
         try:
             cfg, use_risk = _build_config_from_payload(payload)
             result = run_backtest(cfg, use_risk=use_risk)
             with store.lock:
                 store.last_result = result
+                store.cache.clear()
             return jsonify({
                 "ok": True,
                 "summary": _to_jsonable(result.get("stats", {})),
@@ -205,10 +208,23 @@ def create_app() -> Flask:
     @app.get("/api/trades-pnl")
     def trades_with_pnl() -> Any:
         """Return trades enriched with per-leg cashflow and closed round-trip PnL grouping."""
+        limit = int(request.args.get("limit", 500))
+        closed_limit = int(request.args.get("closedLimit", 500))
+
         with store.lock:
             if store.last_result is None:
                 return jsonify({"ok": False, "error": "No backtest run yet"}), 404
             trades_df = store.last_result.get("trades")
+            cached = store.cache.get("trades_pnl_full")
+
+        if cached is not None:
+            trades_rows = cached.get("trades", [])
+            closed_rows = cached.get("closedTrades", [])
+            return jsonify({
+                "ok": True,
+                "trades": trades_rows[-limit:] if limit > 0 else trades_rows,
+                "closedTrades": closed_rows[-closed_limit:] if closed_limit > 0 else closed_rows,
+            })
 
         if trades_df is None:
             return jsonify({"ok": True, "trades": [], "closedTrades": []})
@@ -280,7 +296,17 @@ def create_app() -> Flask:
                         start_date = None
                         legs = []
 
-            return jsonify({"ok": True, "trades": _to_jsonable(enriched), "closedTrades": _to_jsonable(closed)})
+            payload = {"trades": _to_jsonable(enriched), "closedTrades": _to_jsonable(closed)}
+            with store.lock:
+                store.cache["trades_pnl_full"] = payload
+
+            trades_rows = payload["trades"]
+            closed_rows = payload["closedTrades"]
+            return jsonify({
+                "ok": True,
+                "trades": trades_rows[-limit:] if limit > 0 else trades_rows,
+                "closedTrades": closed_rows[-closed_limit:] if closed_limit > 0 else closed_rows,
+            })
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
 
