@@ -54,7 +54,49 @@ const DEFAULT_CONTROLS = {
   stopZ: 3.5,
   nStates: 3,
 };
-
+// ── Scenario presets (story-driven configs for non-traders) ──────────────────
+const SCENARIO_PRESETS = [
+  {
+    id: "stress_test",
+    icon: "🔥",
+    label: "Stress Test",
+    tagline: "Can the strategy survive a crisis?",
+    description:
+      "Raises the entry bar, tightens stop losses, caps the number of pairs at 5, and layers in VIX + gold macro signals so the regime model 'knows' about fear. A good answer to: what happens when markets break?",
+    color: "#ff6b6b",
+    controls: { entryZ: 2.5, exitZ: 0.8, stopZ: 3.0, nStates: 3, maxPairs: 5, useRisk: true, useMacroTickers: true },
+  },
+  {
+    id: "regime_replay",
+    icon: "🔄",
+    label: "Regime Shift Replay",
+    tagline: "Watch the strategy adapt as markets rotate.",
+    description:
+      "Enables quarterly pair re-selection and VIX+gold enrichment so the strategy automatically rebuilds its pair universe each time the regime model detects a structural shift. Best for understanding the core adaptive mechanism.",
+    color: "#ffd166",
+    controls: { nStates: 3, useMacroTickers: true, reselectionEnabled: true, reselectionInterval: 63, maxPairs: 8, useRisk: true },
+  },
+  {
+    id: "bull_run",
+    icon: "🚀",
+    label: "Bull Market Run",
+    tagline: "Maximum alpha in calm conditions.",
+    description:
+      "Aggressive entry threshold, more pairs, and a wide stop to extract the most spread convergence during quiet, low-volatility bull markets. Risk manager is off — full speed ahead.",
+    color: "#51cf66",
+    controls: { entryZ: 1.5, exitZ: 0.3, stopZ: 4.0, maxPairs: 15, useRisk: false, useMacroTickers: false, reselectionEnabled: false },
+  },
+  {
+    id: "conservative",
+    icon: "🛡",
+    label: "Conservative Income",
+    tagline: "Capital preservation first.",
+    description:
+      "High entry bar, strict risk manager, only 4 pairs. Trade less, lose less. Optimised for resilience rather than raw returns — the question is: what is the cost of safety?",
+    color: "#63e6be",
+    controls: { entryZ: 2.5, exitZ: 1.0, stopZ: 3.0, maxPairs: 4, useRisk: true, useMacroTickers: false, reselectionEnabled: true },
+  },
+];
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function formatDateLabel(dateString) {
   const dt = new Date(dateString);
@@ -101,6 +143,264 @@ function RegimeLegend() {
   );
 }
 
+// ── Scenario strip ────────────────────────────────────────────────────────────
+function ScenarioStrip({ activeId, onSelect }) {
+  return (
+    <section className="scenario-strip card">
+      <div className="scenario-strip-top">
+        <div>
+          <p className="eyebrow" style={{ marginBottom: 2 }}>Story Mode</p>
+          <p className="scenario-strip-sub">Choose a pre-configured scenario to explore a particular market narrative, or tune the controls below manually.</p>
+        </div>
+      </div>
+      <div className="scenario-cards">
+        {SCENARIO_PRESETS.map((s) => (
+          <button
+            key={s.id}
+            className={`scenario-card${activeId === s.id ? " active" : ""}`}
+            style={{ "--sc-color": s.color }}
+            onClick={() => onSelect(activeId === s.id ? null : s)}
+          >
+            <span className="scenario-icon">{s.icon}</span>
+            <span className="scenario-name">{s.label}</span>
+            <span className="scenario-tagline">{s.tagline}</span>
+          </button>
+        ))}
+      </div>
+      {activeId && (() => {
+        const s = SCENARIO_PRESETS.find((p) => p.id === activeId);
+        return s ? (
+          <div className="scenario-description" style={{ borderLeftColor: s.color }}>
+            <strong style={{ color: s.color }}>{s.icon} {s.label} — </strong>{s.description}
+          </div>
+        ) : null;
+      })()}
+    </section>
+  );
+}
+
+// ── Annotated timeline ────────────────────────────────────────────────────────
+function AnnotatedTimeline({ regimeBands, drawdown, closedTrades }) {
+  const [activeEvt, setActiveEvt] = useState(null);
+
+  const events = useMemo(() => {
+    const evts = [];
+
+    // Regime transitions
+    for (let i = 1; i < regimeBands.length; i++) {
+      const prev = regimeBands[i - 1];
+      const curr = regimeBands[i];
+      const prevDays = Math.round((new Date(prev.end) - new Date(prev.start)) / 86400000);
+      evts.push({
+        date: curr.start,
+        type: "regime",
+        color: REGIME_META[curr.regime]?.color ?? "#fff",
+        title: `→ ${REGIME_META[curr.regime]?.label ?? `State ${curr.regime}`}`,
+        detail: `Market regime shifted from "${REGIME_META[prev.regime]?.label ?? `State ${prev.regime}`}" (persisted ${prevDays} days) to "${REGIME_META[curr.regime]?.label ?? `State ${curr.regime}`}". The HMM detected a change in return and volatility patterns and updated position sizing rules.`,
+      });
+    }
+
+    // Max drawdown trough
+    if (drawdown.length) {
+      let minIdx = 0;
+      for (let i = 1; i < drawdown.length; i++) {
+        if ((drawdown[i].value ?? 0) < (drawdown[minIdx].value ?? 0)) minIdx = i;
+      }
+      const trough = drawdown[minIdx];
+      if (trough && Number(trough.value) < -5) {
+        evts.push({
+          date: trough.date,
+          type: "drawdown",
+          color: "#ff6b6b",
+          title: `Max DD ${Number(trough.value).toFixed(1)}%`,
+          detail: `The portfolio reached its worst point: ${Math.abs(Number(trough.value)).toFixed(1)}% below its prior peak. This represents the maximum capital at risk at any single moment during the backtest.`,
+        });
+      }
+    }
+
+    // Top 2 wins + top 2 losses from closed round-trips
+    if (closedTrades.length) {
+      const withDates = closedTrades.filter((t) => t.end_date);
+      const sorted = withDates.slice().sort((a, b) => Number(b.realized_pnl) - Number(a.realized_pnl));
+      for (const t of sorted.slice(0, 2)) {
+        if (Number(t.realized_pnl) > 0) {
+          const hold = t.start_date ? Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) : "?";
+          evts.push({
+            date: t.end_date,
+            type: "win",
+            color: "#51cf66",
+            title: `▲ +$${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+            detail: `Best trade: pair ${t.pair_id} closed at +$${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })} profit after a ${hold}-day hold. The price spread mean-reverted as expected by the cointegration model.`,
+          });
+        }
+      }
+      for (const t of sorted.slice(-2).reverse()) {
+        if (Number(t.realized_pnl) < 0) {
+          const hold = t.start_date ? Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) : "?";
+          evts.push({
+            date: t.end_date,
+            type: "loss",
+            color: "#ff8fa3",
+            title: `▼ $${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+            detail: `Worst trade: pair ${t.pair_id} was stopped out at $${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })} loss after ${hold} days. The spread diverged further instead of converging — the stop-loss protected remaining capital.`,
+          });
+        }
+      }
+    }
+
+    return evts.sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [regimeBands, drawdown, closedTrades]);
+
+  if (!events.length) return null;
+
+  return (
+    <div className="anno-timeline">
+      <div className="anno-timeline-header">
+        <h4 className="anno-title">Key Events</h4>
+        <p className="chart-subtitle" style={{ margin: 0 }}>Hover any marker to read a plain-English explanation of what happened at that date.</p>
+      </div>
+      <div className="anno-scroll">
+        {events.map((evt, i) => (
+          <button
+            key={`evt-${i}`}
+            className={`anno-event anno-event-${evt.type}`}
+            style={{ "--evt-color": evt.color }}
+            onMouseEnter={() => setActiveEvt(evt)}
+            onMouseLeave={() => setActiveEvt(null)}
+            onFocus={() => setActiveEvt(evt)}
+            onBlur={() => setActiveEvt(null)}
+          >
+            <span className="anno-dot" />
+            <span className="anno-label">{evt.title}</span>
+            <span className="anno-date">{evt.date?.slice(0, 10)}</span>
+          </button>
+        ))}
+      </div>
+      {activeEvt && (
+        <div className="anno-popover" style={{ borderLeftColor: activeEvt.color }}>
+          <div className="anno-popover-header">
+            <strong style={{ color: activeEvt.color }}>{activeEvt.title}</strong>
+            <span className="anno-popover-date">{activeEvt.date?.slice(0, 10)}</span>
+          </div>
+          <p className="anno-popover-text">{activeEvt.detail}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Summary slide modal (exportable) ─────────────────────────────────────────
+function SummarySlideModal({ open, onClose, stats, regimeSeries, regimeBands, equity, controls, regimePerf }) {
+  if (!open) return null;
+
+  const firstDate  = equity?.[0]?.date?.slice(0, 10) ?? "—";
+  const lastDate   = equity?.[equity.length - 1]?.date?.slice(0, 10) ?? "—";
+  const cagr       = Number(stats?.cagr_pct ?? 0);
+  const sharpe     = Number(stats?.sharpe_ratio ?? 0);
+  const maxDD      = Number(stats?.max_drawdown_pct ?? 0);
+  const sortino    = Number(stats?.sortino_ratio ?? 0);
+  const finalEq    = Number(stats?.final_equity ?? 0);
+  const initEq     = Number(stats?.initial_capital ?? controls?.initialCapital ?? 1_000_000);
+  const totalRet   = initEq ? ((finalEq - initEq) / initEq * 100) : 0;
+  const regimeCount = (new Set((regimeSeries ?? []).map((r) => r.value))).size;
+  const bestRegime  = regimePerf?.length ? [...regimePerf].sort((a, b) => Number(b.Sharpe) - Number(a.Sharpe))[0] : null;
+  const universeLabel = controls?.universe === "top200" ? "the top 200 US equities" : `the ${controls?.universe} sector`;
+
+  const narrative = [
+    `Over the period ${firstDate} to ${lastDate}, the strategy achieved a CAGR of ${cagr.toFixed(1)}% with a Sharpe ratio of ${sharpe.toFixed(2)}.`,
+    ` The Hidden Markov Model identified ${regimeCount} distinct market regime${regimeCount !== 1 ? "s" : ""}, allowing the strategy to dynamically adapt its entry thresholds and position sizing.`,
+    bestRegime
+      ? ` Best performance occurred in the "${bestRegime.Regime}" regime (Sharpe ${Number(bestRegime.Sharpe ?? 0).toFixed(2)}). The risk manager contained the maximum drawdown to ${Math.abs(maxDD).toFixed(1)}%.`
+      : ` The maximum drawdown of ${Math.abs(maxDD).toFixed(1)}% was contained by the regime-aware risk manager.`,
+    ` The strategy traded up to ${controls?.maxPairs ?? "—"} cointegrated pairs from ${universeLabel}.`,
+  ].join("");
+
+  return (
+    <div className="slide-overlay" onClick={onClose}>
+      <div className="slide-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="slide-header">
+          <div>
+            <p className="eyebrow">Quantitative Strategy Report</p>
+            <h2 className="slide-title">Regime-Adaptive Statistical Arbitrage</h2>
+            <p className="slide-period">{firstDate} — {lastDate} · {controls?.universe === "top200" ? "All Sectors" : `${controls?.universe} Sector`}</p>
+          </div>
+          <button className="ghost-button slide-close-btn" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+
+        <div className="slide-kpi-row">
+          {[
+            { label: "Total Return",  value: `${totalRet.toFixed(1)}%`,  color: totalRet >= 0 ? "#51cf66" : "#ff6b6b" },
+            { label: "CAGR",          value: `${cagr.toFixed(1)}%`,      color: cagr >= 0     ? "#51cf66" : "#ff6b6b" },
+            { label: "Sharpe Ratio",  value: sharpe.toFixed(2),          color: sharpe >= 1   ? "#51cf66" : sharpe >= 0 ? "#ffd166" : "#ff6b6b" },
+            { label: "Max Drawdown",  value: `${maxDD.toFixed(1)}%`,     color: "#ff8fa3" },
+            { label: "Sortino Ratio", value: sortino.toFixed(2),         color: sortino >= 1  ? "#51cf66" : "#ffd166" },
+          ].map((k) => (
+            <div key={k.label} className="slide-kpi">
+              <p className="slide-kpi-label">{k.label}</p>
+              <p className="slide-kpi-value" style={{ color: k.color }}>{k.value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="slide-narrative">
+          <p>{narrative}</p>
+        </div>
+
+        {regimeBands.length > 0 && (
+          <div className="slide-section">
+            <p className="slide-section-label">Market Regime Timeline</p>
+            <div className="regime-strip" style={{ height: 20, borderRadius: 6 }}>
+              {regimeBands.map((band, i) => (
+                <div
+                  key={i}
+                  className="regime-strip-seg"
+                  style={{ background: REGIME_META[band.regime]?.color ?? "#888", flex: 1 }}
+                  title={REGIME_META[band.regime]?.label ?? String(band.regime)}
+                />
+              ))}
+            </div>
+            <div className="regime-legend" style={{ marginTop: 10 }}>
+              {Object.values(REGIME_META).map((m) => (
+                <span key={m.label} className="regime-dot" style={{ "--dot-color": m.color }}>{m.label}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {regimePerf?.length > 0 && (
+          <div className="slide-section">
+            <p className="slide-section-label">Performance by Regime</p>
+            <table className="slide-perf-table">
+              <thead>
+                <tr><th>Regime</th><th>Days</th><th>Ann. Return</th><th>Sharpe</th><th>Trades</th></tr>
+              </thead>
+              <tbody>
+                {regimePerf.map((row, i) => (
+                  <tr key={i}>
+                    <td>
+                      <span className="regime-dot-inline" style={{ "--dot-color": Object.values(REGIME_META).find((m) => m.label === row.Regime)?.color ?? "#888" }} />
+                      {row.Regime}
+                    </td>
+                    <td>{row.Days}</td>
+                    <td style={{ color: Number(row["Ann Return %"]) >= 0 ? "#51cf66" : "#ff6b6b" }}>{Number(row["Ann Return %"]).toFixed(1)}%</td>
+                    <td style={{ color: Number(row.Sharpe) >= 0.5 ? "#51cf66" : "#ffd166" }}>{Number(row.Sharpe).toFixed(2)}</td>
+                    <td>{row.Trades}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="slide-footer-row">
+          <p className="slide-disclaimer">For research and educational purposes only. Past performance does not guarantee future results.</p>
+          <button className="run-button slide-print-btn" onClick={() => window.print()}>🖨 Print / Save PDF</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Regime-timeline overlay on equity chart ───────────────────────────────────
 // We merge equity + regime series by date so Recharts can render both.
 function buildEquityRegimeData(equityArr, regimeArr) {
@@ -135,7 +435,15 @@ export default function App() {
   const [hmmInfo,          setHmmInfo]          = useState(null);
   const [running,  setRunning]  = useState(false);
   const [error,    setError]    = useState("");
-  const [chartRange, setChartRange] = useState({ start: null, end: null });
+  const [chartRange,     setChartRange]     = useState({ start: null, end: null });
+  const [activeScenario, setActiveScenario] = useState(null);
+  const [showSlide,      setShowSlide]      = useState(false);
+
+  const applyScenario = (s) => {
+    if (!s) { setActiveScenario(null); return; }
+    setActiveScenario(s.id);
+    setControls((prev) => ({ ...prev, ...s.controls }));
+  };
 
   const refreshData = async () => {
     const [h, s, e, dd, rs, p, reg, rp, tp, hmm] = await Promise.all([
@@ -300,9 +608,13 @@ export default function App() {
           <button className="run-button" onClick={onRun} disabled={running}>
             {running ? "Running Backtest…" : "▶ Run Backtest"}
           </button>
+          <button className="ghost-button" onClick={() => setShowSlide(true)} disabled={!summary}>📊 Export</button>
           <button className="ghost-button" onClick={refreshData}>⟳ Refresh</button>
         </div>
       </section>
+
+      {/* ── Story Mode Scenario Presets ── */}
+      <ScenarioStrip activeId={activeScenario} onSelect={applyScenario} />
 
       {/* ── Controls ── */}
       <section className="control-grid">
@@ -481,6 +793,7 @@ export default function App() {
             ))}
           </div>
         )}
+        <AnnotatedTimeline regimeBands={regimeBands} drawdown={drawdown} closedTrades={closedTrades} />
       </section>
 
       {/* ── Drawdown + Rolling Sharpe ── */}
@@ -962,6 +1275,17 @@ export default function App() {
           </table>
         </div>
       </section>
+
+      <SummarySlideModal
+        open={showSlide}
+        onClose={() => setShowSlide(false)}
+        stats={stats}
+        regimeSeries={regimeSeries}
+        regimeBands={regimeBands}
+        equity={equity}
+        controls={controls}
+        regimePerf={regimePerf}
+      />
 
       {/* ── Footer ── */}
       <footer className="status-footer">
