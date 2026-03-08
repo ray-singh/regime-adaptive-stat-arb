@@ -70,33 +70,53 @@ class Portfolio:
         old_pos = self.positions.get(t, 0.0)
         new_pos = old_pos + qty
 
-        # Track average cost basis (for P&L reporting)
-        if qty > 0:
-            old_cost = self.avg_cost.get(t, fill.fill_price)
-            if old_pos <= 0:
-                # Crossing zero (covering short, then going long) or fresh long
-                self.avg_cost[t] = fill.fill_price
-            else:
+        # Track average cost basis for both long and short books.
+        # For short inventory, avg_cost stores average short sale price.
+        old_cost = self.avg_cost.get(t, fill.fill_price)
+        if new_pos > 0:
+            if old_pos > 0 and qty > 0:
+                # Added to existing long.
                 total_cost = old_pos * old_cost + qty * fill.fill_price
                 self.avg_cost[t] = total_cost / new_pos
-        elif qty < 0 and old_pos >= 0 and new_pos < 0:
-            # Initiated or extended a short
-            self.avg_cost[t] = fill.fill_price
-        # Cover case (qty < 0, reducing a short): cost basis unchanged
+            elif old_pos <= 0 and new_pos > 0:
+                # Crossed from flat/short into long; remaining long opened at this fill.
+                self.avg_cost[t] = fill.fill_price
+            # else: reduced long, keep prior cost basis.
+        elif new_pos < 0:
+            if old_pos < 0 and qty < 0:
+                # Added to existing short (weighted by short shares).
+                old_short = abs(old_pos)
+                add_short = abs(qty)
+                total_proceeds = old_short * old_cost + add_short * fill.fill_price
+                self.avg_cost[t] = total_proceeds / abs(new_pos)
+            elif old_pos >= 0 and new_pos < 0:
+                # Crossed from flat/long into short; remaining short opened at this fill.
+                self.avg_cost[t] = fill.fill_price
+            # else: reduced short, keep prior short basis.
 
-        # Short-sale proceeds tracking
+        # Short-sale proceeds tracking.
+        # Only newly opened/increased short shares generate additional proceeds.
         if qty < 0:
-            proceeds = abs(qty) * fill.fill_price
-            self.short_proceeds[t] = self.short_proceeds.get(t, 0.0) + proceeds
-        elif qty > 0 and old_pos < 0:
-            # Covering — reduce proceeds proportionally
-            cover_frac = min(qty, abs(old_pos)) / abs(old_pos)
-            self.short_proceeds[t] = self.short_proceeds.get(t, 0.0) * (1 - cover_frac)
-            if self.short_proceeds[t] < 0:
-                self.short_proceeds[t] = 0.0
+            short_opened = 0.0
+            if old_pos < 0:
+                short_opened = abs(qty)  # extending existing short
+            elif new_pos < 0:
+                short_opened = abs(new_pos)  # crossed long -> short; only residual opens short
+
+            if short_opened > 0:
+                proceeds = short_opened * fill.fill_price
+                self.short_proceeds[t] = self.short_proceeds.get(t, 0.0) + proceeds
+
+        if qty > 0 and old_pos < 0:
+            # Covering short — release short proceeds proportionally.
+            covered = min(qty, abs(old_pos))
+            if covered > 0:
+                current_proceeds = self.short_proceeds.get(t, 0.0)
+                cover_frac = covered / abs(old_pos)
+                self.short_proceeds[t] = max(0.0, current_proceeds * (1 - cover_frac))
 
         self.positions[t] = new_pos
-        if new_pos == 0.0:
+        if abs(new_pos) < 1e-12:
             self.positions.pop(t, None)
             self.avg_cost.pop(t, None)
             self.short_proceeds.pop(t, None)

@@ -9,6 +9,7 @@ import {
   ComposedChart,
   Line,
   LineChart,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -20,6 +21,7 @@ import {
   getDrawdown,
   getEquity,
   getHealth,
+  getHmmInfo,
   getPairs,
   getRegime,
   getRegimePerformance,
@@ -44,6 +46,9 @@ const DEFAULT_CONTROLS = {
   reselectionInterval: 63,
   reselectionEnabled: true,
   useRisk: true,
+  useMacroTickers: false,
+  // universe choices: 'top200' (all), or sector names matching src/data/universe.SECTOR_MAPPING
+  universe: "top200",
   entryZ: 2.0,
   exitZ: 0.5,
   stopZ: 3.5,
@@ -127,12 +132,13 @@ export default function App() {
       return saved ? JSON.parse(saved) : DEFAULT_CONTROLS;
     } catch { return DEFAULT_CONTROLS; }
   });
+  const [hmmInfo,          setHmmInfo]          = useState(null);
   const [running,  setRunning]  = useState(false);
   const [error,    setError]    = useState("");
   const [chartRange, setChartRange] = useState({ start: null, end: null });
 
   const refreshData = async () => {
-    const [h, s, e, dd, rs, p, reg, rp, tp] = await Promise.all([
+    const [h, s, e, dd, rs, p, reg, rp, tp, hmm] = await Promise.all([
       getHealth(),
       getSummary().catch(() => ({ ok: false })),
       getEquity().catch(() => ({ ok: false, equity: [] })),
@@ -141,7 +147,8 @@ export default function App() {
       getPairs().catch(() => ({ ok: false, pairs: [] })),
       getRegime().catch(() => ({ ok: false, regime: [] })),
       getRegimePerformance().catch(() => ({ ok: false, regimePerformance: [] })),
-      getTradesWithPnL(500).catch(() => ({ ok: false, trades: [], closedTrades: [] }))
+      getTradesWithPnL(500).catch(() => ({ ok: false, trades: [], closedTrades: [] })),
+      getHmmInfo().catch(() => ({ ok: false })),
     ]);
 
     setHealth(h);
@@ -156,6 +163,7 @@ export default function App() {
     if (p.ok)   setPairs(p.pairs || []);
     if (reg.ok) setRegimeSeries(reg.regime || []);
     if (rp.ok)  setRegimePerf(rp.regimePerformance || []);
+    if (hmm.ok) setHmmInfo(hmm.hmm_info || null);
   };
 
   useEffect(() => { refreshData(); }, []);
@@ -167,19 +175,27 @@ export default function App() {
     setRunning(true);
     setError("");
     try {
+      const overrides = {
+        initialCapital:       Number(controls.initialCapital),
+        trainPct:             Number(controls.trainPct),
+        maxPairs:             Number(controls.maxPairs),
+        reselectionInterval:  Number(controls.reselectionInterval),
+        reselectionEnabled:   Boolean(controls.reselectionEnabled),
+        entryZ:               Number(controls.entryZ),
+        exitZ:                Number(controls.exitZ),
+        stopZ:                Number(controls.stopZ),
+        nStates:              Number(controls.nStates),
+      };
+
+      if (controls.useMacroTickers) {
+        // Default macro tickers recommended by the training guide
+        overrides.macroTickers = ["^VIX", "GLD", "TLT", "USO"];
+      }
+
       const payload = {
         useRisk: controls.useRisk,
-        overrides: {
-          initialCapital:       Number(controls.initialCapital),
-          trainPct:             Number(controls.trainPct),
-          maxPairs:             Number(controls.maxPairs),
-          reselectionInterval:  Number(controls.reselectionInterval),
-          reselectionEnabled:   Boolean(controls.reselectionEnabled),
-          entryZ:               Number(controls.entryZ),
-          exitZ:                Number(controls.exitZ),
-          stopZ:                Number(controls.stopZ),
-          nStates:              Number(controls.nStates),
-        },
+        overrides,
+        universe: controls.universe,
       };
       const result = await runBacktest(payload);
       if (!result.ok) setError(result.error || "Backtest failed");
@@ -214,6 +230,51 @@ export default function App() {
     }
     bands.push({ start: cur.date, end: regimeSeries[regimeSeries.length - 1].date, regime: cur.value });
     return bands;
+  }, [regimeSeries]);
+
+  // HMM diagnostics derived client-side from `regimeSeries`
+  const hmmDiagnostics = useMemo(() => {
+    if (!regimeSeries || regimeSeries.length === 0) return null;
+    // sort by date
+    const rows = regimeSeries.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+    const states = Array.from(new Set(rows.map((r) => r.value))).sort((a, b) => a - b);
+    const n = states.length;
+    // map state -> index
+    const idx = {};
+    states.forEach((s, i) => (idx[s] = i));
+
+    // transition counts
+    const counts = Array.from({ length: n }, () => Array.from({ length: n }, () => 0));
+    for (let i = 1; i < rows.length; i++) {
+      const a = idx[rows[i - 1].value];
+      const b = idx[rows[i].value];
+      if (a != null && b != null) counts[a][b] += 1;
+    }
+
+    // convert to probabilities by row
+    const probs = counts.map((row) => {
+      const s = row.reduce((acc, v) => acc + v, 0) || 1;
+      return row.map((v) => v / s);
+    });
+
+    // run-lengths / durations
+    const runs = [];
+    let cur = rows[0].value;
+    let len = 1;
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i].value === cur) len += 1;
+      else {
+        runs.push({ state: cur, length: len });
+        cur = rows[i].value;
+        len = 1;
+      }
+    }
+    runs.push({ state: cur, length: len });
+
+    const durationBars = states.map((s) => ({ state: s, avg_duration: (runs.filter((r) => r.state === s).reduce((a, b) => a + b.length, 0) / Math.max(1, runs.filter((r) => r.state === s).length)) }))
+      .map((d) => ({ state: d.state, value: Number(d.avg_duration.toFixed(1)) }));
+
+    return { states, probs, counts, durationBars };
   }, [regimeSeries]);
 
   const closedTradesById = useMemo(() => {
@@ -271,9 +332,27 @@ export default function App() {
           <label>HMM States (n)
             <input type="number" min="2" max="4" value={controls.nStates} onChange={(e) => setControls({ ...controls, nStates: e.target.value })} />
           </label>
+          <label>Universe
+            <select value={controls.universe} onChange={(e) => setControls({ ...controls, universe: e.target.value })}>
+              <option value="top200">Top 200 (All)</option>
+              <option value="Technology">Technology</option>
+              <option value="Financials">Financials</option>
+              <option value="Healthcare">Healthcare</option>
+              <option value="Consumer">Consumer</option>
+              <option value="Energy">Energy</option>
+              <option value="Industrials">Industrials</option>
+            </select>
+          </label>
+          {controls.universe === "top200" && (
+            <div className="warning-text">⚠ Running on the full universe may be slow. Expect longer backtest times.</div>
+          )}
           <label className="toggle-row">
             <input type="checkbox" checked={controls.useRisk} onChange={(e) => setControls({ ...controls, useRisk: e.target.checked })} />
             Enable Risk Manager
+          </label>
+          <label className="toggle-row">
+            <input type="checkbox" checked={controls.useMacroTickers} onChange={(e) => setControls({ ...controls, useMacroTickers: e.target.checked })} />
+            Use Macro Tickers (VIX, GLD, TLT, USO)
           </label>
           <label className="toggle-row">
             <input type="checkbox" checked={controls.reselectionEnabled} onChange={(e) => setControls({ ...controls, reselectionEnabled: e.target.checked })} />
@@ -298,39 +377,80 @@ export default function App() {
       {/* ── Equity curve with regime timeline (spec §4.1) ── */}
       <section className="card chart-card full-width">
         <div className="chart-header">
-          <h3>Equity Curve &amp; Regime Timeline</h3>
+          <div>
+            <h3>Equity Curve &amp; Regime Timeline</h3>
+            <p className="chart-subtitle">Colored bands show detected market regime. Use the brush below to zoom into any period.</p>
+          </div>
           <RegimeLegend />
         </div>
-        <ResponsiveContainer width="100%" height={300}>
-          <ComposedChart data={equityRegimeData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-            <XAxis dataKey="date" tickFormatter={formatDateLabel} />
-            <YAxis tickFormatter={(v) => `$${(v / 1_000_000).toFixed(2)}M`} width={72} />
+        <ResponsiveContainer width="100%" height={320}>
+          <ComposedChart data={equityRegimeData} margin={{ top: 8, right: 20, bottom: 0, left: 0 }}>
+            <defs>
+              <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#63e6be" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#63e6be" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+            <XAxis
+              dataKey="date"
+              tickFormatter={formatDateLabel}
+              tick={{ fontSize: 11, fill: "#9ab8cc" }}
+              tickLine={false}
+              axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+            />
+            <YAxis
+              tickFormatter={(v) => `$${(v / 1_000_000).toFixed(2)}M`}
+              width={76}
+              tick={{ fontSize: 11, fill: "#9ab8cc" }}
+              tickLine={false}
+              axisLine={false}
+            />
             <Tooltip
-              labelFormatter={formatDateLabel}
+              contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.3)", borderRadius: 10, fontSize: 13 }}
+              labelFormatter={(d) => <span style={{ color: "#63e6be", fontWeight: 600 }}>{formatDateLabel(d)}</span>}
               formatter={(value, name) => {
-                if (name === "equity") return [`$${Number(value).toLocaleString()}`, "Equity"];
-                if (name === "regime") return [REGIME_META[value]?.label ?? value, "Regime"];
+                if (name === "equity") return [`$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, "Portfolio Value"];
                 return [value, name];
               }}
             />
-            {/* Regime bands as thin colored bars on a secondary 0-3 axis */}
-              {/* hidden Y axis used to render regime bars correctly */}
-              <YAxis yAxisId="regime" hide domain={[0, 3]} />
-              <Bar dataKey="regime" yAxisId="regime" fill="transparent" isAnimationActive={false} />
-            <Line
+            {/* Regime colored background bands */}
+            {regimeBands.map((band, i) => (
+              <ReferenceArea
+                key={i}
+                x1={band.start}
+                x2={band.end}
+                fill={REGIME_META[band.regime]?.bg ?? "transparent"}
+                ifOverflow="hidden"
+                label={i === 0 || band.regime !== regimeBands[i - 1]?.regime ? undefined : undefined}
+              />
+            ))}
+            {/* Initial capital baseline */}
+            {stats.initial_capital ? (
+              <ReferenceLine
+                y={Number(stats.initial_capital)}
+                stroke="rgba(255,255,255,0.25)"
+                strokeDasharray="5 4"
+                label={{ value: "Initial capital", position: "insideTopLeft", fontSize: 11, fill: "rgba(255,255,255,0.35)" }}
+              />
+            ) : null}
+            <Area
               type="monotone"
               dataKey="equity"
               stroke="#63e6be"
-              strokeWidth={2}
+              strokeWidth={2.5}
+              fill="url(#equityGrad)"
               dot={false}
-              activeDot={{ r: 4 }}
+              activeDot={{ r: 5, stroke: "#63e6be", strokeWidth: 2, fill: "#0e1b2a" }}
+              isAnimationActive={false}
             />
             <Brush
               dataKey="date"
               height={28}
-              stroke="#8884d8"
-              travellerWidth={10}
+              fill="rgba(14,27,42,0.8)"
+              stroke="rgba(99,230,190,0.35)"
+              travellerWidth={8}
+              tickFormatter={formatDateLabel}
               onChange={(range) => {
                 try {
                   if (!range) return;
@@ -340,17 +460,15 @@ export default function App() {
                   const start = equityRegimeData[startIndex]?.date ?? null;
                   const end = equityRegimeData[endIndex]?.date ?? null;
                   setChartRange({ start, end });
-                } catch (e) {
-                  // ignore brush errors
-                }
+                } catch (e) { /* ignore */ }
               }}
             />
           </ComposedChart>
         </ResponsiveContainer>
         {chartRange.start && chartRange.end ? (
-          <div className="chart-range">Range: {formatDateLabel(chartRange.start)} — {formatDateLabel(chartRange.end)}</div>
+          <div className="chart-range">Selection: <strong>{formatDateLabel(chartRange.start)}</strong> — <strong>{formatDateLabel(chartRange.end)}</strong></div>
         ) : null}
-        {/* Lightweight regime band strip below chart */}
+        {/* Regime colour strip */}
         {regimeBands.length > 0 && (
           <div className="regime-strip" aria-label="Regime band strip">
             {regimeBands.map((band, i) => (
@@ -368,29 +486,116 @@ export default function App() {
       {/* ── Drawdown + Rolling Sharpe ── */}
       <section className="chart-grid">
         <article className="card chart-card">
-          <h3>Drawdown (%)</h3>
-          <ResponsiveContainer width="100%" height={240}>
+          <div className="chart-header">
+            <div>
+              <h3>Drawdown from Peak</h3>
+              <p className="chart-subtitle">How far the portfolio has fallen from its all-time high at each point in time.</p>
+            </div>
+            {stats.max_drawdown_pct != null && (
+              <span className="stat-badge danger">Max {fmt(stats.max_drawdown_pct)}%</span>
+            )}
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
             <AreaChart data={drawdown} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-              <XAxis dataKey="date" tickFormatter={formatDateLabel} hide />
-              <YAxis domain={["dataMin", 0]} tickFormatter={(v) => `${v.toFixed(1)}%`} width={52} />
-              <Tooltip labelFormatter={formatDateLabel} formatter={(v) => [`${Number(v).toFixed(2)}%`, "Drawdown"]} />
-              <Area type="monotone" dataKey="value" stroke="#ff8fa3" fill="rgba(255,143,163,0.35)" />
+              <defs>
+                <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#ff8fa3" stopOpacity={0.5} />
+                  <stop offset="100%" stopColor="#ff8fa3" stopOpacity={0.04} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+              <XAxis
+                dataKey="date"
+                tickFormatter={formatDateLabel}
+                tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                tickLine={false}
+                axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+              />
+              <YAxis
+                domain={["dataMin", 0]}
+                tickFormatter={(v) => `${v.toFixed(0)}%`}
+                width={44}
+                tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                tickLine={false}
+                axisLine={false}
+              />
+              {stats.max_drawdown_pct != null && (
+                <ReferenceLine
+                  y={Number(stats.max_drawdown_pct)}
+                  stroke="rgba(255,107,107,0.6)"
+                  strokeDasharray="5 3"
+                  label={{ value: `Max DD ${fmt(stats.max_drawdown_pct)}%`, position: "insideBottomRight", fontSize: 11, fill: "rgba(255,107,107,0.8)" }}
+                />
+              )}
+              <Tooltip
+                contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,143,163,0.3)", borderRadius: 10, fontSize: 13 }}
+                labelFormatter={(d) => <span style={{ color: "#ff8fa3", fontWeight: 600 }}>{formatDateLabel(d)}</span>}
+                formatter={(v) => [`${Number(v).toFixed(2)}%`, "Drawdown"]}
+              />
+              <Area type="monotone" dataKey="value" stroke="#ff8fa3" strokeWidth={1.8} fill="url(#ddGrad)" dot={false} isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         </article>
 
         <article className="card chart-card">
-          <h3>Rolling 60-Day Sharpe</h3>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={rollingSharpe} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-              <XAxis dataKey="date" tickFormatter={formatDateLabel} hide />
-              <YAxis width={40} />
-              <ReferenceLine y={0} stroke="rgba(255,255,255,0.3)" strokeDasharray="4 4" />
-              <Tooltip labelFormatter={formatDateLabel} formatter={(v) => [Number(v).toFixed(2), "Sharpe"]} />
-              <Line type="monotone" dataKey="value" stroke="#ffd166" strokeWidth={1.5} dot={false} />
-            </LineChart>
+          <div className="chart-header">
+            <div>
+              <h3>Rolling 60-Day Sharpe</h3>
+              <p className="chart-subtitle">Green = positive risk-adjusted alpha. Red = strategy underperforming risk-free rate on this window.</p>
+            </div>
+            {stats.sharpe_ratio != null && (
+              <span className={`stat-badge ${Number(stats.sharpe_ratio) >= 1 ? "success" : Number(stats.sharpe_ratio) >= 0 ? "warn" : "danger"}`}>
+                Overall {fmt(stats.sharpe_ratio, 2)}
+              </span>
+            )}
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={rollingSharpe} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="sharpeGradPos" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#51cf66" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#51cf66" stopOpacity={0.0} />
+                </linearGradient>
+                <linearGradient id="sharpeGradNeg" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.0} />
+                  <stop offset="100%" stopColor="#ff6b6b" stopOpacity={0.35} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+              <XAxis
+                dataKey="date"
+                tickFormatter={formatDateLabel}
+                tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                tickLine={false}
+                axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+              />
+              <YAxis
+                width={40}
+                tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <ReferenceLine y={0} stroke="rgba(255,255,255,0.4)" strokeDasharray="4 4" label={{ value: "0", position: "insideTopLeft", fontSize: 10, fill: "rgba(255,255,255,0.4)" }} />
+              <ReferenceLine y={1} stroke="rgba(81,207,102,0.3)" strokeDasharray="3 4" label={{ value: "1.0 target", position: "insideTopLeft", fontSize: 10, fill: "rgba(81,207,102,0.5)" }} />
+              <Tooltip
+                contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,209,102,0.3)", borderRadius: 10, fontSize: 13 }}
+                labelFormatter={(d) => <span style={{ color: "#ffd166", fontWeight: 600 }}>{formatDateLabel(d)}</span>}
+                formatter={(v) => {
+                  const n = Number(v);
+                  return [<span style={{ color: n >= 0 ? "#51cf66" : "#ff6b6b" }}>{n.toFixed(2)}</span>, "Sharpe (60d)"];
+                }}
+              />
+              <Area type="monotone" dataKey="value" stroke="none" fill="url(#sharpeGradPos)" dot={false} isAnimationActive={false} baseLine={0} />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke="#ffd166"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 5, stroke: "#ffd166", strokeWidth: 2, fill: "#0e1b2a" }}
+                isAnimationActive={false}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </article>
       </section>
@@ -457,6 +662,194 @@ export default function App() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+          </div>
+        </section>
+      )}
+
+      {/* ── HMM Diagnostics ── */}
+      {hmmDiagnostics && (
+        <section className="card full-width hmm-section">
+          <div className="chart-header" style={{ marginBottom: 16 }}>
+            <div>
+              <h3>HMM Regime Diagnostics</h3>
+              <p className="chart-subtitle">Walk-forward trained Gaussian HMM with {controls.nStates} states. States ordered by ascending realised volatility (State 0 = low-vol/bull, State {controls.nStates - 1} = high-vol/bear).</p>
+            </div>
+          </div>
+
+          <div className="hmm-grid">
+            {/* Left: model or empirical transition matrix */}
+            <div className="hmm-panel">
+              <h4 className="hmm-panel-title">
+                Transition Matrix
+                <span className="hmm-source-badge">{hmmInfo?.transition_matrix ? "model" : "empirical"}</span>
+              </h4>
+              <p className="chart-subtitle" style={{ marginTop: 0 }}>Rows = from state · Cols = to state · Values = probability per bar. Diagonal shows regime persistence.</p>
+              {/* Use model matrix from /api/hmm if available, else fall back to empirical */}
+              {(() => {
+                const modelMat = hmmInfo?.transition_matrix;
+                const states = hmmDiagnostics.states;
+                const mat = modelMat
+                  ? modelMat
+                  : hmmDiagnostics.probs;
+                return (
+                  <div style={{ overflowX: "auto" }}>
+                    <table className="matrix-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 110 }}>From \ To</th>
+                          {states.map((s) => (
+                            <th key={`hcol-${s}`} style={{ textAlign: "center" }}>
+                              <span className="state-chip" style={{ "--chip": REGIME_META[s]?.color ?? "#888" }}>
+                                {REGIME_META[s]?.label ?? `State ${s}`}
+                              </span>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mat.map((row, i) => (
+                          <tr key={`hrow-${i}`}>
+                            <td>
+                              <span className="state-chip" style={{ "--chip": REGIME_META[states[i]]?.color ?? "#888" }}>
+                                {REGIME_META[states[i]]?.label ?? `State ${states[i]}`}
+                              </span>
+                            </td>
+                            {row.map((p, j) => {
+                              const isDiag = i === j;
+                              const alpha = Math.min(0.92, p * 1.1 + 0.04);
+                              return (
+                                <td
+                                  key={`cell-${i}-${j}`}
+                                  className={isDiag ? "matrix-diag" : ""}
+                                  style={{ background: `rgba(99,230,190,${isDiag ? alpha : alpha * 0.4})`, textAlign: "center", fontWeight: isDiag ? 600 : 400 }}
+                                >
+                                  {Number(p).toFixed(3)}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Centre: state durations */}
+            <div className="hmm-panel">
+              <h4 className="hmm-panel-title">Avg State Duration <span className="hmm-source-badge">days</span></h4>
+              <p className="chart-subtitle" style={{ marginTop: 0 }}>How many consecutive bars the model tends to stay in each regime before switching.</p>
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={hmmDiagnostics.durationBars} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#9ab8cc" }} tickLine={false} axisLine={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="state"
+                    width={115}
+                    tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,209,102,0.3)", borderRadius: 10, fontSize: 13 }}
+                    formatter={(v) => [<strong>{v} days</strong>, "Avg duration"]}
+                    labelFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
+                  />
+                  <Bar dataKey="value" radius={[0, 6, 6, 0]} isAnimationActive={false}>
+                    {hmmDiagnostics.durationBars.map((d, i) => (
+                      <Cell key={i} fill={REGIME_META[d.state]?.color ?? "#ffd166"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+
+              {/* Walk-forward bar counts from model */}
+              {hmmInfo?.walkforward_counts && (
+                <>
+                  <h4 className="hmm-panel-title" style={{ marginTop: 14 }}>Walk-forward Label Distribution</h4>
+                  <p className="chart-subtitle" style={{ marginTop: 0 }}>Bars assigned to each regime across the full walk-forward training period.</p>
+                  <ResponsiveContainer width="100%" height={130}>
+                    <BarChart
+                      layout="vertical"
+                      data={Object.entries(hmmInfo.walkforward_counts).map(([k, v]) => ({ state: Number(k), count: v }))}
+                      margin={{ top: 4, right: 24, bottom: 4, left: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 11, fill: "#9ab8cc" }} tickLine={false} axisLine={false} />
+                      <YAxis
+                        type="category"
+                        dataKey="state"
+                        width={115}
+                        tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
+                      />
+                      <Tooltip
+                        contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.3)", borderRadius: 10, fontSize: 13 }}
+                        formatter={(v) => [<strong>{v} bars</strong>, "Total days"]}
+                        labelFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
+                      />
+                      <Bar dataKey="count" radius={[0, 6, 6, 0]} isAnimationActive={false}>
+                        {Object.keys(hmmInfo.walkforward_counts).map((k, i) => (
+                          <Cell key={i} fill={REGIME_META[Number(k)]?.color ?? "#63e6be"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </>
+              )}
+            </div>
+
+            {/* Right: emission means per state feature */}
+            <div className="hmm-panel">
+              <h4 className="hmm-panel-title">State Emission Profiles <span className="hmm-source-badge">model means</span></h4>
+              <p className="chart-subtitle" style={{ marginTop: 0 }}>Scaled feature means for each state. Positive logret + low rv_20 = bull; negative logret + high rv_20 = bear.</p>
+              {hmmInfo?.emission_means && hmmInfo?.feature_cols ? (
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart
+                    data={hmmInfo.feature_cols.map((feat, fi) => {
+                      const row = { feature: feat };
+                      hmmInfo.emission_means.forEach((means, si) => {
+                        row[`state_${si}`] = Number(means[fi]?.toFixed(4) ?? 0);
+                      });
+                      return row;
+                    })}
+                    margin={{ top: 4, right: 8, bottom: 8, left: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+                    <XAxis
+                      dataKey="feature"
+                      tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                      tickLine={false}
+                      axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: "#9ab8cc" }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={44}
+                    />
+                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.3)" strokeDasharray="4 3" />
+                    <Tooltip
+                      contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, fontSize: 13 }}
+                      formatter={(v, name) => {
+                        const si = Number(name.replace("state_", ""));
+                        return [Number(v).toFixed(4), REGIME_META[si]?.label ?? name];
+                      }}
+                    />
+                    {hmmInfo.emission_means.map((_, si) => (
+                      <Bar key={si} dataKey={`state_${si}`} name={`state_${si}`} fill={REGIME_META[si]?.color ?? "#888"} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p style={{ color: "#9ab8cc", fontSize: "0.82rem" }}>Run a backtest to populate HMM model internals.</p>
+              )}
+            </div>
           </div>
         </section>
       )}

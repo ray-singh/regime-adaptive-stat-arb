@@ -66,6 +66,12 @@ def compute_standard_features(df: pd.DataFrame, windows: List[int] = [5, 20, 60]
         # Trend strength: |momentum| / realized_vol — high = trending, low = mean-reverting
         df[f'trend_str_{w}'] = df[f'mom_{w}'].abs() / df[f'rv_{w}'].replace(0, np.nan)
 
+    # Volume z-score (guide §2 — stationary volume feature)
+    if 'volume' in df.columns:
+        vol_mean = df['volume'].rolling(window=20, min_periods=10).mean()
+        vol_std  = df['volume'].rolling(window=20, min_periods=10).std()
+        df['volume_zscore'] = (df['volume'] - vol_mean) / vol_std.replace(0, np.nan)
+
     # Clean infinite values
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 

@@ -41,6 +41,7 @@ from backtest.data_feed import HistoricalDataFeed
 from backtest.execution import SimulatedBroker, ExecutionConfig
 from backtest.portfolio import Portfolio
 from backtest.engine import BacktestEngine
+from backtest.engine import default_position_sizer
 from backtest.strategy_wrapper import PairsBacktestStrategy
 
 logger = logging.getLogger(__name__)
@@ -124,13 +125,122 @@ def fetch_wide_prices(tickers, period, interval) -> tuple[pd.DataFrame, dict]:
     return wide, feature_dict
 
 
-def fit_regime_detector(feature_dict: dict, regime_ticker: str, n_states: int = 3):
+# Guide §6 — macro tickers for multivariate HMM
+_MACRO_DEFAULTS = ["^VIX", "GLD", "TLT", "USO"]
+
+
+def fetch_macro_features(
+    macro_tickers: list,
+    period: str = "15y",
+    interval: str = "1d",
+) -> dict:
+    """Download macro assets (VIX, gold, treasuries, oil) and compute features.
+    Returns {ticker: feature_df}.
+    """
+    client = YFinanceClient()
+    macro_dict: dict = {}
+    for t in macro_tickers:
+        try:
+            raw  = client.fetch_ticker(t, period=period, interval=interval, use_cache=True)
+            feat = compute_standard_features(raw)
+            feat.index = pd.to_datetime(feat["Date"]).dt.tz_localize(None)
+            macro_dict[t] = feat
+            logger.info("Fetched macro ticker: %s (%d rows)", t, len(feat))
+        except Exception as e:
+            logger.warning("Skipping macro ticker %s: %s", t, e)
+    return macro_dict
+
+
+def build_macro_feature_matrix(
+    regime_feat_df: pd.DataFrame,
+    macro_dict: dict,
+) -> tuple[pd.DataFrame, list]:
+    """Merge macro features into the regime-ticker feature DataFrame.
+
+    For VIX:        long-term rolling z-score of the VIX level (already mean-reverting).
+    For others:     log return, aligned to regime ticker index.
+
+    Returns (enriched_df, list_of_new_column_names).
+    """
+    result     = regime_feat_df.copy()
+    extra_cols: list = []
+
+    for ticker, feat_df in macro_dict.items():
+        price_col = "adj_close" if "adj_close" in feat_df.columns else "close"
+        is_vix    = "VIX" in ticker.upper()
+
+        if is_vix:
+            # VIX level z-score — guide says VIX is already stationary
+            vix_series = feat_df[price_col].reindex(result.index, method="ffill")
+            roll_mean  = vix_series.rolling(252, min_periods=60).mean()
+            roll_std   = vix_series.rolling(252, min_periods=60).std()
+            col        = "vix_zscore"
+            result[col] = (vix_series - roll_mean) / roll_std.replace(0, np.nan)
+            extra_cols.append(col)
+        else:
+            # Other macro assets: log return
+            col = ticker.lower().replace("^", "").replace("-", "_") + "_logret"
+            if "logret" in feat_df.columns:
+                result[col] = feat_df["logret"].reindex(result.index, method="ffill")
+                extra_cols.append(col)
+
+    result.replace([np.inf, -np.inf], np.nan, inplace=True)
+    return result, extra_cols
+
+
+def fit_regime_detector(
+    feature_dict: dict,
+    regime_ticker: str,
+    n_states: int = 3,
+    use_walkforward: bool = True,
+    min_train_years: int = 5,
+    retrain_years: int = 1,
+    macro_dict: dict = None,
+):
+    """Fit an HMMRegimeDetector following the training guide.
+
+    Steps (guide §1–6):
+      1. Feature engineering: logret, rv_20, mom_20, volume_zscore on a broad
+         market proxy (VOO/SPY).
+      2. Optionally enrich with macro features (VIX, GLD, TLT, USO) for a
+         multivariate HMM (guide §6).
+      3. Walk-forward training (use_walkforward=True): prevents look-ahead bias
+         by only using data available at each prediction point.
+      4. Fallback model (basic cols) stored for online inference during
+         backtest simulation.
+    """
     feat = feature_dict.get(regime_ticker)
     if feat is None:
+        logger.warning("Regime ticker %s not found in feature_dict", regime_ticker)
         return None
-    det = HMMRegimeDetector(n_states=n_states)
-    det.fit(feat)
-    logger.info("HMM regime detector fitted on %s", regime_ticker)
+
+    # Guide §2 — base stationary features (never train on raw prices)
+    base_cols = [c for c in ["logret", "rv_20", "mom_20", "volume_zscore"] if c in feat.columns]
+    extra_cols: list = []
+
+    # Guide §6 — optional multivariate macro enrichment
+    if macro_dict:
+        feat, extra_cols = build_macro_feature_matrix(feat, macro_dict)
+        logger.info("Macro features added: %s", extra_cols)
+
+    all_feature_cols = base_cols + extra_cols
+    det = HMMRegimeDetector(n_states=n_states, feature_cols=all_feature_cols)
+
+    if use_walkforward:
+        # Guide §3 — walk-forward training (expanding window, retrain annually)
+        det.fit_predict_walkforward(
+            feat,
+            min_train_years=min_train_years,
+            retrain_every_years=retrain_years,
+        )
+        logger.info(
+            "Walk-forward HMM ready on %s | features=%s | %d bias-free labels",
+            regime_ticker, all_feature_cols, len(det._walkforward_labels),
+        )
+    else:
+        det.fit(feat)
+        logger.info("HMM fitted (single-split) on %s | features=%s", regime_ticker, all_feature_cols)
+
     return det
 
 
@@ -210,8 +320,13 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
 
     # 1. Fetch data
     print("\n[1/5] Fetching price data…")
+    # Always include the regime ticker so HMM training works regardless of universe choice.
+    fetch_tickers = list(cfg.data.tickers)
+    regime_ticker_extra = cfg.regime.regime_ticker not in fetch_tickers
+    if regime_ticker_extra:
+        fetch_tickers.append(cfg.regime.regime_ticker)
     wide, feature_dict = fetch_wide_prices(
-        cfg.data.tickers, cfg.data.period, cfg.data.interval
+        fetch_tickers, cfg.data.period, cfg.data.interval
     )
     print(f"  Price matrix: {wide.shape[0]} days × {wide.shape[1]} tickers "
           f"({wide.index[0].date()} → {wide.index[-1].date()})")
@@ -224,13 +339,62 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
 
     # 3. In-sample: fit regime detector + select pairs
     print("\n[3/5] Fitting regime detector and selecting pairs (in-sample)…")
+
+    # Fetch macro features for multivariate HMM if configured (guide §6)
+    macro_dict: dict = {}
+    if cfg.regime.macro_tickers:
+        print(f"  Fetching macro tickers for multivariate HMM: {cfg.regime.macro_tickers}")
+        macro_dict = fetch_macro_features(
+            cfg.regime.macro_tickers, cfg.data.period, cfg.data.interval
+        )
+
     regime_detector = fit_regime_detector(
-        feature_dict, cfg.regime.regime_ticker, cfg.regime.n_states
+        feature_dict,
+        cfg.regime.regime_ticker,
+        n_states=cfg.regime.n_states,
+        use_walkforward=cfg.regime.use_walkforward,
+        min_train_years=cfg.regime.walkforward_min_train_years,
+        retrain_years=cfg.regime.walkforward_retrain_years,
+        macro_dict=macro_dict if macro_dict else None,
     )
+
+    # Collect HMM diagnostics (walk-forward label counts + transition matrix) for debugging
+    hmm_debug: dict = {}
+    if regime_detector is None:
+        hmm_debug["error"] = f"Regime ticker '{cfg.regime.regime_ticker}' not found in fetched data"
+    else:
+        try:
+            wf = getattr(regime_detector, "_walkforward_labels", None)
+            if wf is not None and not wf.empty:
+                try:
+                    hmm_debug["walkforward_counts"] = {int(k): int(v) for k, v in wf.value_counts().items()}
+                except Exception as e:
+                    hmm_debug["walkforward_counts"] = f"error: {e}"
+            else:
+                hmm_debug["walkforward_counts"] = None
+            try:
+                tm = regime_detector.transition_matrix()
+                hmm_debug["transition_matrix"] = tm.values.tolist()
+                hmm_debug["n_states"] = regime_detector.n_states
+            except Exception as e:
+                hmm_debug["transition_matrix"] = f"error: {e}"
+            # Emission means for each regime (useful for state interpretation)
+            try:
+                if regime_detector._model is not None:
+                    order = [k for k, v in sorted(regime_detector._label_map.items(), key=lambda x: x[1])]
+                    hmm_debug["emission_means"] = regime_detector._model.means_[order].tolist()
+                    hmm_debug["feature_cols"] = regime_detector._active_features or list(regime_detector.feature_cols)
+            except Exception as e:
+                hmm_debug["emission_means"] = f"error: {e}"
+        except Exception as e:
+            hmm_debug["error"] = str(e)
 
     wide_insample = {t: v[v.index <= split_date] for t, v in
                      {t: wide[t].dropna() for t in wide.columns}.items()}
     wide_is = pd.DataFrame(wide_insample)
+    # Exclude the regime ticker from pair selection (it's a market-proxy ETF, not a tradeable pair)
+    if regime_ticker_extra and cfg.regime.regime_ticker in wide_is.columns:
+        wide_is = wide_is.drop(columns=[cfg.regime.regime_ticker])
     pairs_df = select_pairs(wide_is, split_date, cfg)
 
     if pairs_df.empty:
@@ -307,6 +471,12 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
         strategy=strategy,
         portfolio=portfolio,
         broker=broker,
+        position_sizer=lambda signal, pf, prices: default_position_sizer(
+            signal,
+            pf,
+            prices,
+            target_notional_pct=cfg.backtest.target_notional_pct,
+        ),
         risk_manager=risk_manager,
         verbose=cfg.backtest.verbose,
     )
@@ -316,6 +486,9 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
     results["pair_reselection_count"] = (
         pair_reselector.reselection_count if pair_reselector is not None else 0
     )
+
+    # Always attach HMM debug info
+    results["hmm_info"] = hmm_debug
 
     # Collect regime history for per-regime analytics (spec §4.4)
     regime_series = strategy.get_regime_history()

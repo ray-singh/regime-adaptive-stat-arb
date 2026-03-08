@@ -134,6 +134,12 @@ h1 {
   font-family: "IBM Plex Mono", monospace;
 }
 
+.warning-text {
+  margin-top: 6px;
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+
 .toggle-row {
   flex-direction: row !important;
   align-items: center;
@@ -182,12 +188,12 @@ h1 {
 }
 
 .card {
-  padding: 12px;
+  padding: 16px;
 }
 
 .chart-card h3,
 .table-card h3 {
-  margin: 2px 0 12px;
+  margin: 2px 0 4px;
 }
 
 .tables-grid {
@@ -295,10 +301,10 @@ th {
 /* ── Regime band strip ── */
 .regime-strip {
   display: flex;
-  height: 6px;
-  border-radius: 3px;
+  height: 8px;
+  border-radius: 4px;
   overflow: hidden;
-  margin-top: 8px;
+  margin-top: 10px;
   gap: 1px;
 }
 
@@ -353,4 +359,102 @@ th {
 .closed-trades-panel td:nth-child(5) {
   text-align: right;
   padding-right: 18px;
+}
+
+.matrix-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: "IBM Plex Mono", monospace;
+}
+.matrix-table th,
+.matrix-table td {
+  border: 1px solid rgba(255,255,255,0.06);
+  padding: 8px 12px;
+  font-size: 0.82rem;
+}
+.matrix-table th {
+  background: rgba(255,255,255,0.04);
+}
+.matrix-table .matrix-diag {
+  outline: 1px solid rgba(99,230,190,0.4);
+  outline-offset: -1px;
+}
+
+/* ── Chart subtitle / caption ── */
+.chart-subtitle {
+  margin: 2px 0 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+/* ── Stat badge (chart header chip) ── */
+.stat-badge {
+  display: inline-block;
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  align-self: flex-start;
+}
+.stat-badge.success { background: rgba(81,207,102,0.15); color: #51cf66; border: 1px solid rgba(81,207,102,0.3); }
+.stat-badge.warn    { background: rgba(255,209,102,0.15); color: #ffd166; border: 1px solid rgba(255,209,102,0.3); }
+.stat-badge.danger  { background: rgba(255,107,107,0.15); color: #ff6b6b; border: 1px solid rgba(255,107,107,0.3); }
+
+/* ── State chip (HMM labels in matrix) ── */
+.state-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.73rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--chip, #888) 18%, transparent);
+  color: var(--chip, #888);
+  border: 1px solid color-mix(in srgb, var(--chip, #888) 40%, transparent);
+  white-space: nowrap;
+}
+
+/* ── HMM section layout ── */
+.hmm-section {
+  padding: 18px;
+}
+.hmm-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.hmm-panel {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 14px;
+}
+.hmm-panel-title {
+  margin: 0 0 8px;
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hmm-source-badge {
+  font-size: 0.65rem;
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--muted);
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 5px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 400;
+}
+
+@media (max-width: 1024px) {
+  .hmm-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 680px) {
+  .hmm-grid { grid-template-columns: 1fr; }
 }

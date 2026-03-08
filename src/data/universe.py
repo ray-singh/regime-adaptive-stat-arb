@@ -48,6 +48,7 @@ TOP_200_LIQUID_US_EQUITIES = [
     # Real Estate & Utilities (20)
     "AMT", "PLD", "CCI", "EQIX", "PSA", "SPG", "O", "WELL", "DLR", "AVB",
     "NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "WEC", "ES"
+    , "VOO"
 ]
 
 

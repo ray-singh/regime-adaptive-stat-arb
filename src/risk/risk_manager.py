@@ -242,9 +242,16 @@ class RiskManager:
             self.cfg.max_gross_leverage,
             self.cfg.regime_leverage_caps.get(self._current_regime, self.cfg.max_gross_leverage),
         )
-        current_gross = portfolio.gross_leverage(prices)
-        order_notional = abs(order.quantity) * prices.get(order.ticker, 0.0)
-        post_gross = current_gross + order_notional / equity if equity > 0 else float("inf")
+        price = prices.get(order.ticker, 0.0)
+        old_pos = portfolio.get_position(order.ticker)
+        new_pos = old_pos + order.quantity
+
+        gross_notional = sum(
+            abs(shares) * prices.get(t, portfolio.avg_cost.get(t, 0.0))
+            for t, shares in portfolio.positions.items()
+        )
+        projected_gross_notional = gross_notional - abs(old_pos) * price + abs(new_pos) * price
+        post_gross = projected_gross_notional / equity if equity > 0 else float("inf")
 
         if post_gross > cap:
             self._reject(order, f"post-trade gross leverage {post_gross:.2f} > cap {cap:.2f}")
@@ -254,10 +261,16 @@ class RiskManager:
     def _check_net_leverage(self, order: OrderEvent, portfolio: Portfolio,
                             prices: dict[str, float], equity: float) -> bool:
         """Reject if post-trade net leverage would exceed cap."""
-        current_net = portfolio.net_leverage(prices)
-        # Estimate post-trade net: simplistic directional adjustment
-        signed_notional = order.quantity * prices.get(order.ticker, 0.0)
-        post_net = abs(current_net + signed_notional / equity) if equity > 0 else float("inf")
+        price = prices.get(order.ticker, 0.0)
+        old_pos = portfolio.get_position(order.ticker)
+        new_pos = old_pos + order.quantity
+
+        net_notional = sum(
+            shares * prices.get(t, portfolio.avg_cost.get(t, 0.0))
+            for t, shares in portfolio.positions.items()
+        )
+        projected_net_notional = net_notional - old_pos * price + new_pos * price
+        post_net = abs(projected_net_notional / equity) if equity > 0 else float("inf")
 
         if post_net > self.cfg.max_net_leverage:
             self._reject(order, f"post-trade net leverage {post_net:.2f} > cap "
@@ -271,19 +284,16 @@ class RiskManager:
         if not order.pair_id:
             return True  # no pair tracking for this order
 
-        # Sum notional of existing positions for this pair_id
+        pair_tickers = order.pair_id.split("/")
         pair_notional = 0.0
-        for t, shares in portfolio.positions.items():
+        for t in pair_tickers:
             price = prices.get(t, portfolio.avg_cost.get(t, 0.0))
-            # We can't directly check pair_id from portfolio positions,
-            # so we check all positions for tickers in this pair
-            pair_tickers = order.pair_id.split("/")
-            if t in pair_tickers:
-                pair_notional += abs(shares) * price
+            shares = portfolio.get_position(t)
+            if t == order.ticker:
+                shares = shares + order.quantity
+            pair_notional += abs(shares) * price
 
-        # Add proposed order
-        order_notional = abs(order.quantity) * prices.get(order.ticker, 0.0)
-        post = (pair_notional + order_notional) / equity if equity > 0 else float("inf")
+        post = pair_notional / equity if equity > 0 else float("inf")
 
         if post > self.cfg.max_pair_notional_pct:
             self._reject(order, f"pair {order.pair_id} notional {post:.1%} > "
@@ -296,9 +306,8 @@ class RiskManager:
         """Reject if a single ticker's total notional exceeds limit."""
         t = order.ticker
         price = prices.get(t, 0.0)
-        current_notional = abs(portfolio.get_position(t)) * price
-        order_notional = abs(order.quantity) * price
-        post = (current_notional + order_notional) / equity if equity > 0 else float("inf")
+        projected_pos = portfolio.get_position(t) + order.quantity
+        post = (abs(projected_pos) * price) / equity if equity > 0 else float("inf")
 
         if post > self.cfg.max_ticker_notional_pct:
             self._reject(order, f"ticker {t} concentration {post:.1%} > "

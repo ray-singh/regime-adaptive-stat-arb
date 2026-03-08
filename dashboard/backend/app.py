@@ -73,6 +73,45 @@ def _build_config_from_payload(payload: dict[str, Any]) -> tuple[PlatformConfig,
     if "nStates" in overrides:
         cfg.regime.n_states = int(overrides["nStates"])
 
+    # Allow toggling macro tickers from the dashboard: overrides.macroTickers
+    if "macroTickers" in overrides:
+        mt = overrides.get("macroTickers") or []
+        try:
+            if isinstance(mt, list):
+                cfg.regime.macro_tickers = [str(x) for x in mt]
+            elif isinstance(mt, str):
+                cfg.regime.macro_tickers = [mt]
+        except Exception:
+            pass
+
+    # Universe override (top-level or inside overrides) -- allows selecting sector or full top200
+    universe = payload.get("universe") or overrides.get("universe")
+    if universe:
+        try:
+            from data.universe import get_universe, SECTOR_MAPPING, get_sector_tickers
+        except Exception:
+            get_universe = None
+            get_sector_tickers = None
+            SECTOR_MAPPING = {}
+
+        if get_universe is not None:
+            u = str(universe).strip()
+            try:
+                if u.lower() in ("top200", "top-200", "all"):
+                    cfg.data.tickers = get_universe("top200")
+                else:
+                    # Try case-insensitive sector match
+                    match = None
+                    for k in list(SECTOR_MAPPING.keys()):
+                        if k.lower() == u.lower():
+                            match = k
+                            break
+                    if match and get_sector_tickers is not None:
+                        cfg.data.tickers = get_sector_tickers(match)
+            except Exception:
+                # ignore and keep defaults
+                pass
+
     return cfg, use_risk
 
 
@@ -379,6 +418,17 @@ def create_app() -> Flask:
             return jsonify({"ok": True, "rollingSharpe": result})
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.get("/api/hmm")
+    def hmm_info() -> Any:
+        """Return HMM debug info collected during the last backtest run."""
+        with store.lock:
+            if store.last_result is None:
+                return jsonify({"ok": False, "error": "No backtest run yet"}), 404
+            info = store.last_result.get("hmm_info")
+        if info is None:
+            return jsonify({"ok": True, "hmm_info": {}})
+        return jsonify({"ok": True, "hmm_info": _to_jsonable(info)})
 
     return app
 

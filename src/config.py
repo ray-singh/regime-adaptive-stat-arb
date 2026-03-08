@@ -13,15 +13,20 @@ import os
 import logging
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List
+# Use the predefined universe when available
+try:
+    from data.universe import TOP_200_LIQUID_US_EQUITIES
+except Exception:
+    TOP_200_LIQUID_US_EQUITIES = None
 
 
 @dataclass
 class DataConfig:
     """Data fetching settings."""
-    tickers: List[str] = field(default_factory=lambda: [
+    tickers: List[str] = field(default_factory=(lambda: TOP_200_LIQUID_US_EQUITIES if TOP_200_LIQUID_US_EQUITIES is not None else [
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META",
         "TSLA", "JPM", "V", "UNH", "ADBE", "AMD", "AVGO", "CRM", "ORCL",
-    ])
+    ]))
     period: str = "10y"
     interval: str = "1d"
     cache_dir: str = "data/cache"
@@ -31,7 +36,14 @@ class DataConfig:
 class RegimeConfig:
     """Regime detection settings."""
     n_states: int = 3
-    regime_ticker: str = "AAPL"
+    regime_ticker: str = "VOO"
+    # Walk-forward training (guide §3) — prevents look-ahead bias
+    use_walkforward: bool = True
+    walkforward_min_train_years: int = 5   # minimum bars before first prediction window
+    walkforward_retrain_years: int = 1     # refit every N years with expanding window
+    # Multivariate macro HMM (guide §6) — leave empty for univariate mode
+    # Example: ["^VIX", "GLD", "TLT", "USO"]
+    macro_tickers: List[str] = field(default_factory=list)
 
 
 @dataclass

@@ -58,3 +58,8 @@ export async function getRollingSharpe(window = 60) {
   const response = await fetch(`${API_BASE}/api/rolling-sharpe?window=${window}`);
   return response.json();
 }
+
+export async function getHmmInfo() {
+  const response = await fetch(`${API_BASE}/api/hmm`);
+  return response.json();
+}
