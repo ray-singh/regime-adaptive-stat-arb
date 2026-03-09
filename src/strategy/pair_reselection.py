@@ -124,11 +124,8 @@ class PairReSelector:
                         self._reselection_count, bar_count)
             return new_pairs_df, set(), set()
 
-        # Compare with current pairs
-        new_pair_ids = set()
-        for _, row in new_pairs_df.iterrows():
-            pid = f"{row['ticker1']}/{row['ticker2']}"
-            new_pair_ids.add(pid)
+        # Vectorized set construction — avoids per-row Python overhead of iterrows
+        new_pair_ids = set(new_pairs_df["ticker1"] + "/" + new_pairs_df["ticker2"])
 
         added = new_pair_ids - current_pair_ids
         removed = current_pair_ids - new_pair_ids

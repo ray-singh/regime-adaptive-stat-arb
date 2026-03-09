@@ -27,6 +27,20 @@ from .portfolio import Portfolio
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lazy-cached import of featurize so sys.path manipulation runs only once
+# ---------------------------------------------------------------------------
+_featurize_fn = None
+
+def _get_featurize():
+    global _featurize_fn
+    if _featurize_fn is None:
+        import sys, os as _os
+        sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+        from features.featurize import compute_standard_features
+        _featurize_fn = compute_standard_features
+    return _featurize_fn
+
 # Default: per-regime target-notional multipliers
 DEFAULT_REGIME_SIZE: dict[int, float] = {
     0: 1.0,    # Bull / Low-Vol  — full size
@@ -162,6 +176,10 @@ class PairsBacktestStrategy:
         self._reselection_signals: List[SignalEvent] = []
 
         self._bar_count = 0
+        # Regime update throttle — regime labels change slowly, no need to
+        # re-predict on every single bar.
+        self._regime_update_every: int = 5
+        self._regime_last_update: int = 0
 
     # -----------------------------------------------------------------------
     # Called once per bar by the BacktestEngine
@@ -173,22 +191,16 @@ class PairsBacktestStrategy:
         portfolio: Portfolio,
     ) -> List[SignalEvent]:
 
-        # 1. Update price buffers (track ALL tickers in the universe)
-        for t in self._tickers:
-            p = event.prices.get(t)
-            if p is not None and np.isfinite(p):
-                self._price_buf[t].append(p)
-                # Ensure buffer exists for new tickers discovered via reselection
-                if t not in self._price_buf:
-                    buf_size = max(self.zscore_window * 3, 504, 252)
-                    self._price_buf[t] = deque(maxlen=buf_size)
-                    self._price_buf[t].append(p)
-
-        # Also track any prices for tickers not yet in self._tickers
+        # 1. Update price buffers — single pass over incoming prices.
+        # Tickers already in self._tickers but absent from this bar's prices
+        # simply don't get a new value appended, which is the same behaviour
+        # as the previous two-loop approach.
+        _buf_size = max(self.zscore_window * 3, 504, 252)
         for t, p in event.prices.items():
             if t not in self._price_buf:
-                buf_size = max(self.zscore_window * 3, 504, 252)
-                self._price_buf[t] = deque(maxlen=buf_size)
+                self._price_buf[t] = deque(maxlen=_buf_size)
+                if t not in self._tickers:
+                    self._tickers.append(t)
             if p is not None and np.isfinite(p):
                 self._price_buf[t].append(p)
 
@@ -296,22 +308,28 @@ class PairsBacktestStrategy:
     # -----------------------------------------------------------------------
 
     def _update_regime(self, event: MarketEvent) -> None:
-        """Refit/predict regime on the latest price window."""
+        """Predict regime on the latest price window.
+
+        Throttled to every ``_regime_update_every`` bars because regime labels
+        change slowly.  Using only the most-recent 90 prices (enough for
+        rv_20/mom_20) and windows=[20] keeps DataFrame construction cheap.
+        """
+        if self._bar_count - self._regime_last_update < self._regime_update_every:
+            return
+        self._regime_last_update = self._bar_count
+
         rt  = self._regime_ticker
-        buf = list(self._price_buf.get(rt, []))
-        if len(buf) < self.zscore_window:
+        buf = self._price_buf.get(rt)
+        if buf is None or len(buf) < self.zscore_window:
             return
 
-        # Build a minimal feature df for the detector from the price buffer
         try:
-            import sys, os
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-            from features.featurize import compute_standard_features
-
-            prices = pd.Series(buf, name="close")
-            dates  = pd.date_range(end=event.date, periods=len(buf), freq="B")
-            mini_df = pd.DataFrame({"Date": dates, "close": prices.values})
-            feat = compute_standard_features(mini_df)
+            compute_standard_features = _get_featurize()
+            # 90 prices is enough for rv_20 + mom_20 + decent HMM context
+            prices = list(buf)[-90:]
+            dates  = pd.date_range(end=event.date, periods=len(prices), freq="B")
+            mini_df = pd.DataFrame({"Date": dates, "close": prices})
+            feat = compute_standard_features(mini_df, windows=[20])
 
             if "rv_20" not in feat.columns or feat["rv_20"].dropna().empty:
                 return
@@ -321,7 +339,7 @@ class PairsBacktestStrategy:
             if len(labels) > 0:
                 self._current_regime = int(labels.iloc[-1])
         except Exception as e:
-            logger.debug(f"Regime update skipped: {e}")
+            logger.debug("Regime update skipped: %s", e)
 
     # -----------------------------------------------------------------------
     # Periodic Pair Re-Selection
@@ -353,49 +371,52 @@ class PairsBacktestStrategy:
 
         signals: List[SignalEvent] = []
 
+        # O(1) lookup dict — avoids nested O(n*m) loop over pairs
+        pairs_by_id: Dict[str, PairConfig] = {pc.pair_id: pc for pc in self._pairs}
+
         # 1. Close removed pairs
         for pid in removed:
-            for pc in self._pairs:
-                if pc.pair_id == pid and pc.position != 0:
-                    signals.append(SignalEvent(
-                        date=event.date,
-                        ticker1=pc.ticker1,
-                        ticker2=pc.ticker2,
-                        direction="flat",
-                        strength=1.0,
-                        spread_zscore=0.0,
-                        hedge_ratio=pc.hedge_ratio,
-                        strategy_id=self.strategy_id,
-                    ))
-                    pc.position = 0
+            pc = pairs_by_id.get(pid)
+            if pc is not None and pc.position != 0:
+                signals.append(SignalEvent(
+                    date=event.date,
+                    ticker1=pc.ticker1,
+                    ticker2=pc.ticker2,
+                    direction="flat",
+                    strength=1.0,
+                    spread_zscore=0.0,
+                    hedge_ratio=pc.hedge_ratio,
+                    strategy_id=self.strategy_id,
+                ))
+                pc.position = 0
 
-        # 2. Remove old pair configs
+        # 2. Remove old pair configs and rebuild lookup
         self._pairs = [pc for pc in self._pairs if pc.pair_id not in removed]
+        pairs_by_id = {pc.pair_id: pc for pc in self._pairs}
 
-        # 3. Add new pairs (and update hedge ratios for kept pairs)
-        existing_pids = {pc.pair_id for pc in self._pairs}
-        for _, row in new_pairs_df.iterrows():
-            pid = f"{row['ticker1']}/{row['ticker2']}"
-            if pid in existing_pids:
+        # 3. Add new pairs / update hedge ratios — itertuples avoids row-copy overhead
+        _buf_size = max(self.zscore_window * 3, 504, 252)
+        for row in new_pairs_df.itertuples(index=False):
+            pid = f"{row.ticker1}/{row.ticker2}"
+            if pid in pairs_by_id:
                 # Update hedge ratio for existing pair
-                for pc in self._pairs:
-                    if pc.pair_id == pid:
-                        pc.hedge_ratio = row["hedge_ratio"]
+                pairs_by_id[pid].hedge_ratio = row.hedge_ratio
             elif pid in added:
                 # Add new pair
-                self._pairs.append(PairConfig(
-                    ticker1=row["ticker1"],
-                    ticker2=row["ticker2"],
-                    hedge_ratio=row["hedge_ratio"],
+                new_pc = PairConfig(
+                    ticker1=row.ticker1,
+                    ticker2=row.ticker2,
+                    hedge_ratio=row.hedge_ratio,
                     entry_z=self._entry_z,
                     exit_z=self._exit_z,
                     stop_z=self._stop_z,
-                ))
+                )
+                self._pairs.append(new_pc)
+                pairs_by_id[pid] = new_pc
                 # Ensure price buffers exist for new tickers
-                for t in [row["ticker1"], row["ticker2"]]:
+                for t in [row.ticker1, row.ticker2]:
                     if t not in self._price_buf:
-                        buf_size = max(self.zscore_window * 3, 504, 252)
-                        self._price_buf[t] = deque(maxlen=buf_size)
+                        self._price_buf[t] = deque(maxlen=_buf_size)
                     if t not in self._tickers:
                         self._tickers.append(t)
 

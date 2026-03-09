@@ -335,18 +335,18 @@ def create_app() -> Flask:
                 acc_cash = 0.0
                 start_date = None
                 legs = []
-                for _, row in grp.iterrows():
-                    qty = float(row.get("quantity") or 0)
-                    price = float(row.get("fill_price") or 0)
-                    commission = float(row.get("commission") or 0)
+                for row in grp.itertuples(index=False):
+                    qty = float(row.quantity or 0)
+                    price = float(row.fill_price or 0)
+                    commission = float(row.commission or 0)
                     cash_flow = -qty * price - commission
                     if start_date is None:
-                        start_date = row.get("date")
+                        start_date = row.date
                     running_qty += qty
                     acc_cash += cash_flow
                     legs.append({
-                        "date": str(row.get("date")),
-                        "ticker": row.get("ticker"),
+                        "date": str(row.date),
+                        "ticker": getattr(row, "ticker", None),
                         "quantity": qty,
                         "fill_price": price,
                         "commission": commission,
@@ -354,7 +354,6 @@ def create_app() -> Flask:
                         "pair_id": pair,
                     })
 
-                    # Record enriched leg (will attach roundtrip id when closed)
                     enriched.append({**legs[-1], "roundtrip_id": round_id if running_qty == 0 else None})
 
                     if abs(running_qty) < 1e-9:
