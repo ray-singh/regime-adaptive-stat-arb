@@ -423,8 +423,8 @@ th {
 }
 .hmm-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 20px;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
   align-items: start;
 }
 .hmm-panel {
@@ -432,6 +432,12 @@ th {
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 12px;
   padding: 14px;
+}
+
+.hmm-left-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .hmm-panel-title {
   margin: 0 0 8px;

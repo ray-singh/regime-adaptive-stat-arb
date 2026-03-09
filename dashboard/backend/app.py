@@ -17,6 +17,7 @@ if SRC_DIR not in sys.path:
 
 from config import PlatformConfig, setup_logging
 from backtest.run_backtest import run_backtest
+from backtest.job_queue import BacktestJobQueue, JobStatus
 
 
 @dataclass
@@ -31,6 +32,16 @@ class BacktestStore:
 
 
 store = BacktestStore()
+
+
+def _run_backtest_from_payload(payload: dict) -> dict:
+    """Thin adapter so BacktestJobQueue can call run_backtest."""
+    cfg, use_risk = _build_config_from_payload(payload)
+    return run_backtest(cfg, use_risk=use_risk)
+
+
+# Global job queue — max 2 concurrent long backtests
+job_queue = BacktestJobQueue(runner=_run_backtest_from_payload, max_workers=2)
 
 
 def _build_config_from_payload(payload: dict[str, Any]) -> tuple[PlatformConfig, bool]:
@@ -429,6 +440,58 @@ def create_app() -> Flask:
         if info is None:
             return jsonify({"ok": True, "hmm_info": {}})
         return jsonify({"ok": True, "hmm_info": _to_jsonable(info)})
+
+    # ── Job queue endpoints ────────────────────────────────────────────────
+
+    @app.post("/api/jobs/submit")
+    def jobs_submit() -> Any:
+        """Submit a backtest job asynchronously.  Returns job_id immediately.
+
+        Accepts the same JSON payload as /api/run-backtest.
+        Poll /api/jobs/<job_id> for status and results.
+        """
+        payload = request.get_json(silent=True) or {}
+        try:
+            job_id = job_queue.submit(payload)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": True, "job_id": job_id, "status": "pending"}), 202
+
+    @app.get("/api/jobs")
+    def jobs_list() -> Any:
+        """List all backtest jobs with their status (no result blobs)."""
+        limit = int(request.args.get("limit", 50))
+        return jsonify({"ok": True, "jobs": job_queue.list_jobs(limit=limit)})
+
+    @app.get("/api/jobs/<job_id>")
+    def jobs_get(job_id: str) -> Any:
+        """Return full status + result for a single job.
+
+        Result blob is included only when status == 'complete'.
+        """
+        job = job_queue.get(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "Job not found"}), 404
+
+        body: dict[str, Any] = {"ok": True, **job.to_summary()}
+
+        if job.status == JobStatus.COMPLETE and job.result is not None:
+            body["summary"] = _to_jsonable(job.result.get("stats", {}))
+            body["risk"]    = _to_jsonable(job.result.get("risk_summary", {}))
+            body["pairReselections"] = job.result.get("pair_reselection_count", 0)
+
+        return jsonify(body)
+
+    @app.delete("/api/jobs/<job_id>")
+    def jobs_cancel(job_id: str) -> Any:
+        """Cancel a pending job.  Returns 409 if the job is already running."""
+        job = job_queue.get(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "Job not found"}), 404
+        if job.status.value not in ("pending",):
+            return jsonify({"ok": False, "error": f"Cannot cancel a {job.status.value} job"}), 409
+        ok = job_queue.cancel(job_id)
+        return jsonify({"ok": ok})
 
     return app
 

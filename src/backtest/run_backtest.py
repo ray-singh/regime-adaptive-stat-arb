@@ -27,6 +27,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
+import json
+
+try:
+    import mlflow
+    _HAS_MLFLOW = True
+except Exception:
+    mlflow = None
+    _HAS_MLFLOW = False
+
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -318,6 +327,27 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
     print("  Regime-Adaptive Pairs Backtest")
     print("=" * 64)
 
+    # Optionally start MLflow run to record experiment metadata and artifacts
+    mlflow_run = None
+    if _HAS_MLFLOW:
+        try:
+            exp_name = getattr(cfg.backtest, "experiment_name", "regime-adaptive-backtests")
+            mlflow.set_experiment(exp_name)
+            mlflow_run = mlflow.start_run()
+            # Log a few key params (best-effort)
+            try:
+                mlflow.log_params({
+                    "initial_capital": float(cfg.backtest.initial_capital),
+                    "train_pct": float(cfg.backtest.train_pct),
+                    "max_pairs": int(cfg.pairs.max_pairs),
+                    "n_states": int(cfg.regime.n_states),
+                    "use_walkforward": bool(cfg.regime.use_walkforward),
+                })
+            except Exception:
+                pass
+        except Exception:
+            mlflow_run = None
+
     # 1. Fetch data
     print("\n[1/5] Fetching price data…")
     # Always include the regime ticker so HMM training works regardless of universe choice.
@@ -528,6 +558,46 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
 
     # Plots
     _make_plots(results, pairs_df, cfg)
+
+    # MLflow logging: metrics, artifacts, and HMM internals
+    if _HAS_MLFLOW and mlflow_run is not None:
+        try:
+            stats = results.get("stats", {})
+            # log scalar metrics
+            for k, v in stats.items():
+                try:
+                    mlflow.log_metric(k, float(v))
+                except Exception:
+                    pass
+
+            # regime performance -> CSV artifact
+            rp = results.get("regime_performance")
+            if rp is not None and not rp.empty:
+                rp_csv = os.path.join(cfg.plots_dir, "regime_performance.csv")
+                rp.to_csv(rp_csv)
+                mlflow.log_artifact(rp_csv, artifact_path="regime_performance")
+
+            # HMM internals -> JSON artifact
+            hmm_json = os.path.join(cfg.plots_dir, "hmm_info.json")
+            try:
+                with open(hmm_json, "w") as fh:
+                    json.dump(hmm_debug, fh, indent=2)
+                mlflow.log_artifact(hmm_json, artifact_path="hmm_info")
+            except Exception:
+                pass
+
+            # plots
+            plot_path = os.path.join(cfg.plots_dir, "backtest_results.png")
+            if os.path.exists(plot_path):
+                mlflow.log_artifact(plot_path, artifact_path="plots")
+
+        except Exception:
+            logger.exception("MLflow logging failed")
+        finally:
+            try:
+                mlflow.end_run()
+            except Exception:
+                pass
 
     return results
 
