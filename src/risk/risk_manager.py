@@ -59,15 +59,6 @@ class RiskConfig:
     regime_leverage_caps : dict[int, float]
         Override max_gross_leverage per regime label.
         E.g. {0: 4.0, 1: 3.0, 2: 2.0, 3: 1.0}
-    regime_max_open_pairs : dict[int, int]
-        Override max_open_pairs per regime label.
-        E.g. {0: 10, 1: 8, 2: 5, 3: 2}
-    regime_pair_notional_pct : dict[int, float]
-        Override max_pair_notional_pct per regime label.
-        E.g. {0: 0.20, 1: 0.15, 2: 0.10, 3: 0.05}
-    regime_ticker_notional_pct : dict[int, float]
-        Override max_ticker_notional_pct per regime label.
-        E.g. {0: 0.25, 1: 0.20, 2: 0.15, 3: 0.08}
     """
     max_gross_leverage: float = 4.0
     max_net_leverage: float = 2.0
@@ -78,28 +69,10 @@ class RiskConfig:
     drawdown_reduce_pct: float = -0.15      # -15% drawdown → reduce
     drawdown_scale_factor: float = 0.50     # half size in reduce zone
     regime_leverage_caps: dict = field(default_factory=lambda: {
-        0: 4.0,   # Low vol — allow full leverage
-        1: 3.0,   # Normal — moderate reduction
-        2: 2.0,   # High vol — half leverage
-        3: 1.0,   # Crisis — minimal leverage
-    })
-    regime_max_open_pairs: dict = field(default_factory=lambda: {
-        0: 10,    # Low vol — full capacity
-        1: 8,     # Normal — slight reduction
-        2: 5,     # High vol — reduce pair count
-        3: 2,     # Crisis — minimal pairs
-    })
-    regime_pair_notional_pct: dict = field(default_factory=lambda: {
-        0: 0.20,  # Low vol — 20% per pair leg
-        1: 0.15,  # Normal — 15%
-        2: 0.10,  # High vol — 10%
-        3: 0.05,  # Crisis — 5%
-    })
-    regime_ticker_notional_pct: dict = field(default_factory=lambda: {
-        0: 0.25,  # Low vol — 25% per ticker
-        1: 0.20,  # Normal — 20%
-        2: 0.15,  # High vol — 15%
-        3: 0.08,  # Crisis — 8%
+        0: 4.0,   # Low vol
+        1: 3.0,   # Normal
+        2: 2.0,   # High vol
+        3: 1.0,   # Crisis
     })
 
 
@@ -307,14 +280,9 @@ class RiskManager:
 
     def _check_pair_notional(self, order: OrderEvent, portfolio: Portfolio,
                              prices: dict[str, float], equity: float) -> bool:
-        """Reject if a single pair's notional exceeds limit (regime-aware)."""
+        """Reject if a single pair's notional exceeds limit."""
         if not order.pair_id:
             return True  # no pair tracking for this order
-
-        # Use regime-specific limit if available
-        limit = self.cfg.regime_pair_notional_pct.get(
-            self._current_regime, self.cfg.max_pair_notional_pct
-        )
 
         pair_tickers = order.pair_id.split("/")
         pair_notional = 0.0
@@ -327,46 +295,34 @@ class RiskManager:
 
         post = pair_notional / equity if equity > 0 else float("inf")
 
-        if post > limit:
+        if post > self.cfg.max_pair_notional_pct:
             self._reject(order, f"pair {order.pair_id} notional {post:.1%} > "
-                         f"regime-{self._current_regime} limit {limit:.1%}")
+                         f"limit {self.cfg.max_pair_notional_pct:.1%}")
             return False
         return True
 
     def _check_ticker_concentration(self, order: OrderEvent, portfolio: Portfolio,
                                     prices: dict[str, float], equity: float) -> bool:
-        """Reject if a single ticker's total notional exceeds limit (regime-aware)."""
-        # Use regime-specific limit if available
-        limit = self.cfg.regime_ticker_notional_pct.get(
-            self._current_regime, self.cfg.max_ticker_notional_pct
-        )
-
+        """Reject if a single ticker's total notional exceeds limit."""
         t = order.ticker
         price = prices.get(t, 0.0)
         projected_pos = portfolio.get_position(t) + order.quantity
         post = (abs(projected_pos) * price) / equity if equity > 0 else float("inf")
 
-        if post > limit:
+        if post > self.cfg.max_ticker_notional_pct:
             self._reject(order, f"ticker {t} concentration {post:.1%} > "
-                         f"regime-{self._current_regime} limit {limit:.1%}")
+                         f"limit {self.cfg.max_ticker_notional_pct:.1%}")
             return False
         return True
 
     def _check_max_pairs(self, order: OrderEvent, portfolio: Portfolio) -> bool:
-        """Reject if opening a new pair would exceed max_open_pairs (regime-aware)."""
+        """Reject if opening a new pair would exceed max_open_pairs."""
         if not order.pair_id:
             return True
         if order.pair_id in self._open_pair_ids:
             return True   # already open — allow adjustments
-        
-        # Use regime-specific limit if available
-        limit = self.cfg.regime_max_open_pairs.get(
-            self._current_regime, self.cfg.max_open_pairs
-        )
-        
-        if len(self._open_pair_ids) >= limit:
-            self._reject(order, f"max open pairs for regime-{self._current_regime} "
-                         f"({limit}) reached")
+        if len(self._open_pair_ids) >= self.cfg.max_open_pairs:
+            self._reject(order, f"max open pairs ({self.cfg.max_open_pairs}) reached")
             return False
         return True
 
@@ -401,23 +357,6 @@ class RiskManager:
     def summary(self) -> dict:
         """Return risk manager statistics."""
         total = self._approval_count + self._rejection_count
-        
-        # Current regime-specific limits
-        regime_limits = {
-            "leverage_cap": self.cfg.regime_leverage_caps.get(
-                self._current_regime, self.cfg.max_gross_leverage
-            ),
-            "max_pairs": self.cfg.regime_max_open_pairs.get(
-                self._current_regime, self.cfg.max_open_pairs
-            ),
-            "pair_notional_pct": self.cfg.regime_pair_notional_pct.get(
-                self._current_regime, self.cfg.max_pair_notional_pct
-            ),
-            "ticker_notional_pct": self.cfg.regime_ticker_notional_pct.get(
-                self._current_regime, self.cfg.max_ticker_notional_pct
-            ),
-        }
-        
         return {
             "orders_approved": self._approval_count,
             "orders_rejected": self._rejection_count,
@@ -428,5 +367,4 @@ class RiskManager:
             "final_drawdown_pct": round(self._current_drawdown * 100, 2),
             "current_regime": self._current_regime,
             "open_pairs": len(self._open_pair_ids),
-            "regime_limits": regime_limits,
         }
