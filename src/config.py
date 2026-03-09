@@ -94,6 +94,11 @@ class RiskConfigSpec:
     drawdown_halt_pct: float = -0.30
     drawdown_reduce_pct: float = -0.15
     drawdown_scale_factor: float = 0.50
+    # Regime-aware risk maps (optional)
+    regime_leverage_caps: dict = field(default_factory=lambda: {0: 4.0, 1: 3.0, 2: 2.0, 3: 1.0})
+    regime_max_open_pairs: dict = field(default_factory=lambda: {0: 10, 1: 8, 2: 5, 3: 2})
+    regime_pair_notional_pct: dict = field(default_factory=lambda: {0: 0.2, 1: 0.15, 2: 0.10, 3: 0.05})
+    regime_ticker_notional_pct: dict = field(default_factory=lambda: {0: 0.25, 1: 0.20, 2: 0.15, 3: 0.08})
 
 
 @dataclass

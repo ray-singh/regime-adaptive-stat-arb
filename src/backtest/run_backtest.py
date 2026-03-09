@@ -463,6 +463,10 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
             drawdown_halt_pct=cfg.risk.drawdown_halt_pct,
             drawdown_reduce_pct=cfg.risk.drawdown_reduce_pct,
             drawdown_scale_factor=cfg.risk.drawdown_scale_factor,
+            regime_leverage_caps=getattr(cfg.risk, "regime_leverage_caps", None) or getattr(cfg.risk, "regime_leverage_caps", {}),
+            regime_max_open_pairs=getattr(cfg.risk, "regime_max_open_pairs", None) or getattr(cfg.risk, "regime_max_open_pairs", {}),
+            regime_pair_notional_pct=getattr(cfg.risk, "regime_pair_notional_pct", None) or getattr(cfg.risk, "regime_pair_notional_pct", {}),
+            regime_ticker_notional_pct=getattr(cfg.risk, "regime_ticker_notional_pct", None) or getattr(cfg.risk, "regime_ticker_notional_pct", {}),
         )
         risk_manager = RiskManager(config=risk_cfg)
         risk_manager._peak_equity = cfg.backtest.initial_capital

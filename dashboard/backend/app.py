@@ -95,6 +95,36 @@ def _build_config_from_payload(payload: dict[str, Any]) -> tuple[PlatformConfig,
         except Exception:
             pass
 
+    # Regime-aware risk maps (from frontend overrides)
+    if "regimeLeverageCaps" in overrides:
+        raw = overrides.get("regimeLeverageCaps") or {}
+        if isinstance(raw, dict):
+            try:
+                cfg.risk.regime_leverage_caps = {int(k): float(v) for k, v in raw.items()}
+            except Exception:
+                pass
+    if "regimeMaxOpenPairs" in overrides:
+        raw = overrides.get("regimeMaxOpenPairs") or {}
+        if isinstance(raw, dict):
+            try:
+                cfg.risk.regime_max_open_pairs = {int(k): int(v) for k, v in raw.items()}
+            except Exception:
+                pass
+    if "regimePairNotionalPct" in overrides:
+        raw = overrides.get("regimePairNotionalPct") or {}
+        if isinstance(raw, dict):
+            try:
+                cfg.risk.regime_pair_notional_pct = {int(k): float(v) for k, v in raw.items()}
+            except Exception:
+                pass
+    if "regimeTickerNotionalPct" in overrides:
+        raw = overrides.get("regimeTickerNotionalPct") or {}
+        if isinstance(raw, dict):
+            try:
+                cfg.risk.regime_ticker_notional_pct = {int(k): float(v) for k, v in raw.items()}
+            except Exception:
+                pass
+
     # Universe override (top-level or inside overrides) -- allows selecting sector or full top200
     universe = payload.get("universe") or overrides.get("universe")
     if universe:

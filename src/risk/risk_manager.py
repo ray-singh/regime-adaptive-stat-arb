@@ -74,6 +74,10 @@ class RiskConfig:
         2: 2.0,   # High vol
         3: 1.0,   # Crisis
     })
+    # Optional per-regime overrides for other risk dimensions
+    regime_max_open_pairs: dict = field(default_factory=lambda: {0: 10, 1: 8, 2: 5, 3: 2})
+    regime_pair_notional_pct: dict = field(default_factory=lambda: {0: 0.2, 1: 0.15, 2: 0.10, 3: 0.05})
+    regime_ticker_notional_pct: dict = field(default_factory=lambda: {0: 0.25, 1: 0.20, 2: 0.15, 3: 0.08})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
