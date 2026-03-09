@@ -19,7 +19,9 @@ from itertools import combinations
 from typing import List, Optional, Tuple, Dict
 import logging
 import warnings
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+import atexit
 
 from statsmodels.tsa.stattools import coint
 from statsmodels.regression.linear_model import OLS
@@ -83,6 +85,54 @@ def _test_pair_worker(args: tuple):
     }
 
 
+def _test_pairs_batch_worker(batch: list):
+    """Worker that receives a list of args tuples and returns list of results.
+    This reduces IPC overhead by batching several pair tests per process.
+    """
+    results = []
+    for args in batch:
+        try:
+            res = _test_pair_worker(args)
+            if res is not None:
+                results.append(res)
+        except Exception:
+            # don't let one bad pair kill the whole batch
+            continue
+    return results
+
+
+# Module-level executor reused across calls to avoid repeated process spawn
+_GLOBAL_EXECUTOR: ProcessPoolExecutor | None = None
+_GLOBAL_EXECUTOR_WORKERS: int | None = None
+
+
+def _get_executor(max_workers: int) -> ProcessPoolExecutor:
+    global _GLOBAL_EXECUTOR, _GLOBAL_EXECUTOR_WORKERS
+    # Recreate pool if worker count changed to avoid stale sizing.
+    if _GLOBAL_EXECUTOR is not None and _GLOBAL_EXECUTOR_WORKERS != max_workers:
+        _GLOBAL_EXECUTOR.shutdown(wait=False)
+        _GLOBAL_EXECUTOR = None
+        _GLOBAL_EXECUTOR_WORKERS = None
+
+    if _GLOBAL_EXECUTOR is None:
+        # Try to prefer 'fork' start method on platforms that support it to
+        # reduce pickling overhead; fall back to default when unavailable.
+        try:
+            ctx = multiprocessing.get_context("fork")
+        except Exception:
+            ctx = None
+
+        if ctx is not None:
+            _GLOBAL_EXECUTOR = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)  # type: ignore[arg-type]
+        else:
+            _GLOBAL_EXECUTOR = ProcessPoolExecutor(max_workers=max_workers)
+        _GLOBAL_EXECUTOR_WORKERS = max_workers
+
+        # Ensure executor is cleaned up on interpreter exit
+        atexit.register(lambda: _GLOBAL_EXECUTOR.shutdown(wait=False) if _GLOBAL_EXECUTOR is not None else None)
+    return _GLOBAL_EXECUTOR
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Pair Selection
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +166,7 @@ class PairsSelector:
         tickers: Optional[List[str]] = None,
         max_pairs: int = 50,
         verbose: bool = True,
+        sequential_threshold: int = 64,
     ) -> pd.DataFrame:
         """Find cointegrated pairs in a wide price DataFrame.
 
@@ -146,10 +197,12 @@ class PairsSelector:
         logger.info("  After |r|≥0.70 pre-filter: %d pairs remain", len(combos))
 
         # ── Build argument list (convert to numpy arrays once, outside workers)
+        # Cache cleaned per-ticker series to avoid repeated dropna/index ops.
+        cleaned = {t: price_df[t].dropna() for t in tickers}
         args_list: list = []
         for t1, t2 in combos:
-            s1 = price_df[t1].dropna()
-            s2 = price_df[t2].dropna()
+            s1 = cleaned[t1]
+            s2 = cleaned[t2]
             common = s1.index.intersection(s2.index)
             if len(common) < 252:
                 continue
@@ -162,19 +215,44 @@ class PairsSelector:
                 self.max_half_life,
             ))
 
-        # ── Parallel execution via ProcessPoolExecutor
+        # ── Parallel execution via reusable ProcessPoolExecutor with batching
         # Use at most 4 workers (avoid over-subscribing on small universes)
         n_workers = max(1, min(os.cpu_count() or 4, 4, (len(args_list) + 3) // 4))
         pairs_result: list = []
+        if not args_list:
+            return pd.DataFrame(pairs_result)
+
+        # For smaller candidate sets, process start + IPC overhead dominates.
+        if len(args_list) < sequential_threshold:
+            for a in args_list:
+                r = _test_pair_worker(a)
+                if r is not None:
+                    pairs_result.append(r)
+            result = pd.DataFrame(pairs_result)
+            if not result.empty:
+                result = result.sort_values("pvalue").head(max_pairs).reset_index(drop=True)
+            logger.info("Found %d cointegrated pairs", len(result))
+            return result
+
+        # Batch size: aim for ~8 batches per worker to amortize scheduling.
+        # Cap at 128 to avoid very large task payloads.
+        batch_size = min(128, max(1, len(args_list) // (n_workers * 8)))
+        batches = [args_list[i:i + batch_size] for i in range(0, len(args_list), batch_size)]
+
         try:
-            with ProcessPoolExecutor(max_workers=n_workers) as exe:
-                for res in exe.map(_test_pair_worker, args_list, chunksize=max(1, len(args_list) // (n_workers * 4))):
-                    if res is not None:
-                        pairs_result.append(res)
+            exe = _get_executor(n_workers)
+            # Use map to submit batches; each worker runs multiple tests inside
+            for batch_res in exe.map(_test_pairs_batch_worker, batches):
+                if not batch_res:
+                    continue
+                pairs_result.extend(batch_res)
         except Exception as exc:
-            # Fallback to sequential execution if multiprocessing fails (e.g. spawn issues)
-            logger.warning("Parallel pair testing failed (%s); falling back to sequential.", exc)
-            pairs_result = [r for a in args_list if (r := _test_pair_worker(a)) is not None]
+            # Fallback to sequential execution if multiprocessing fails
+            logger.warning("Batched parallel pair testing failed (%s); falling back to sequential.", exc)
+            for a in args_list:
+                r = _test_pair_worker(a)
+                if r is not None:
+                    pairs_result.append(r)
 
         if verbose:
             logger.info("  %d cointegrated pairs found", len(pairs_result))
@@ -390,3 +468,53 @@ def build_price_matrix(df: pd.DataFrame, price_col: str = "adj_close") -> pd.Dat
     df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
     wide = df.pivot(index="Date", columns="ticker", values=price_col)
     return wide.sort_index()
+
+
+def profile_find_pairs(
+    selector: PairsSelector,
+    price_df: pd.DataFrame,
+    profiler: str = "cprofile",
+    **kwargs,
+) -> None:
+    """Run `selector.find_pairs(price_df, **kwargs)` under cProfile and
+    write stats to `profiles/pairs_find.prof` for offline inspection.
+    """
+    try:
+        if profiler == "pyinstrument":
+            try:
+                from pyinstrument import Profiler
+            except Exception as exc:
+                logger.warning("pyinstrument not available: %s", exc)
+                return
+
+            import os as _os
+            out_dir = _os.path.join(_os.path.dirname(__file__), "..", "data", "cache")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = _os.path.join(out_dir, "pairs_find_pyinstrument.html")
+
+            profiler_obj = Profiler()
+            profiler_obj.start()
+            selector.find_pairs(price_df, **kwargs)
+            profiler_obj.stop()
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(profiler_obj.output_html())
+            logger.info("Wrote pyinstrument profile to %s", out_path)
+            return
+
+        import cProfile
+        import pstats
+        import os as _os
+
+        out_dir = _os.path.join(_os.path.dirname(__file__), "..", "data", "cache")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = _os.path.join(out_dir, "pairs_find.prof")
+
+        pr = cProfile.Profile()
+        pr.enable()
+        selector.find_pairs(price_df, **kwargs)
+        pr.disable()
+        ps = pstats.Stats(pr).sort_stats("cumtime")
+        ps.dump_stats(out_path)
+        logger.info("Wrote profile to %s", out_path)
+    except Exception as exc:
+        logger.warning("Profiling failed: %s", exc)

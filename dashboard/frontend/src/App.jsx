@@ -31,72 +31,9 @@ import {
   runBacktest,
 } from "./api";
 
-// ── Regime metadata ──────────────────────────────────────────────────────────
-const REGIME_META = {
-  0: { label: "Bull / Low-Vol",       color: "#51cf66", bg: "rgba(81,207,102,0.18)"  },
-  1: { label: "Neutral / Mid-Vol",    color: "#ffd166", bg: "rgba(255,209,102,0.14)" },
-  2: { label: "Bear / High-Vol",      color: "#ff8fa3", bg: "rgba(255,143,163,0.22)" },
-  3: { label: "Crisis / Extreme-Vol", color: "#ff6b6b", bg: "rgba(255,107,107,0.30)" },
-};
-
-const DEFAULT_CONTROLS = {
-  initialCapital: 1_000_000,
-  trainPct: 0.5,
-  maxPairs: 10,
-  reselectionInterval: 63,
-  reselectionEnabled: true,
-  useRisk: true,
-  useMacroTickers: false,
-  // universe choices: 'top200' (all), or sector names matching src/data/universe.SECTOR_MAPPING
-  universe: "top200",
-  entryZ: 2.0,
-  exitZ: 0.5,
-  stopZ: 3.5,
-  nStates: 3,
-};
-// ── Scenario presets (story-driven configs for non-traders) ──────────────────
-const SCENARIO_PRESETS = [
-  {
-    id: "stress_test",
-    icon: "🔥",
-    label: "Stress Test",
-    tagline: "Can the strategy survive a crisis?",
-    description:
-      "Raises the entry bar, tightens stop losses, caps the number of pairs at 5, and layers in VIX + gold macro signals so the regime model 'knows' about fear. A good answer to: what happens when markets break?",
-    color: "#ff6b6b",
-    controls: { entryZ: 2.5, exitZ: 0.8, stopZ: 3.0, nStates: 3, maxPairs: 5, useRisk: true, useMacroTickers: true },
-  },
-  {
-    id: "regime_replay",
-    icon: "🔄",
-    label: "Regime Shift Replay",
-    tagline: "Watch the strategy adapt as markets rotate.",
-    description:
-      "Enables quarterly pair re-selection and VIX+gold enrichment so the strategy automatically rebuilds its pair universe each time the regime model detects a structural shift. Best for understanding the core adaptive mechanism.",
-    color: "#ffd166",
-    controls: { nStates: 3, useMacroTickers: true, reselectionEnabled: true, reselectionInterval: 63, maxPairs: 8, useRisk: true },
-  },
-  {
-    id: "bull_run",
-    icon: "🚀",
-    label: "Bull Market Run",
-    tagline: "Maximum alpha in calm conditions.",
-    description:
-      "Aggressive entry threshold, more pairs, and a wide stop to extract the most spread convergence during quiet, low-volatility bull markets. Risk manager is off — full speed ahead.",
-    color: "#51cf66",
-    controls: { entryZ: 1.5, exitZ: 0.3, stopZ: 4.0, maxPairs: 15, useRisk: false, useMacroTickers: false, reselectionEnabled: false },
-  },
-  {
-    id: "conservative",
-    icon: "🛡",
-    label: "Conservative Income",
-    tagline: "Capital preservation first.",
-    description:
-      "High entry bar, strict risk manager, only 4 pairs. Trade less, lose less. Optimised for resilience rather than raw returns — the question is: what is the cost of safety?",
-    color: "#63e6be",
-    controls: { entryZ: 2.5, exitZ: 1.0, stopZ: 3.0, maxPairs: 4, useRisk: true, useMacroTickers: false, reselectionEnabled: true },
-  },
-];
+import ScenarioStrip from "./components/ScenarioStrip";
+import RiskControls from "./components/RiskControls";
+import { REGIME_META, DEFAULT_CONTROLS } from "./controls";
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function formatDateLabel(dateString) {
   const dt = new Date(dateString);
@@ -143,41 +80,7 @@ function RegimeLegend() {
   );
 }
 
-// ── Scenario strip ────────────────────────────────────────────────────────────
-function ScenarioStrip({ activeId, onSelect }) {
-  return (
-    <section className="scenario-strip card">
-      <div className="scenario-strip-top">
-        <div>
-          <p className="eyebrow" style={{ marginBottom: 2 }}>Story Mode</p>
-          <p className="scenario-strip-sub">Choose a pre-configured scenario to explore a particular market narrative, or tune the controls below manually.</p>
-        </div>
-      </div>
-      <div className="scenario-cards">
-        {SCENARIO_PRESETS.map((s) => (
-          <button
-            key={s.id}
-            className={`scenario-card${activeId === s.id ? " active" : ""}`}
-            style={{ "--sc-color": s.color }}
-            onClick={() => onSelect(activeId === s.id ? null : s)}
-          >
-            <span className="scenario-icon">{s.icon}</span>
-            <span className="scenario-name">{s.label}</span>
-            <span className="scenario-tagline">{s.tagline}</span>
-          </button>
-        ))}
-      </div>
-      {activeId && (() => {
-        const s = SCENARIO_PRESETS.find((p) => p.id === activeId);
-        return s ? (
-          <div className="scenario-description" style={{ borderLeftColor: s.color }}>
-            <strong style={{ color: s.color }}>{s.icon} {s.label} — </strong>{s.description}
-          </div>
-        ) : null;
-      })()}
-    </section>
-  );
-}
+
 
 // ── Annotated timeline ────────────────────────────────────────────────────────
 function AnnotatedTimeline({ regimeBands, drawdown, closedTrades, activeEvt, onEvtChange }) {
@@ -480,6 +383,23 @@ export default function App() {
   const onRun = async () => {
     setRunning(true);
     setError("");
+    // Validate risk inputs when enabled
+    if (controls.useRisk) {
+      const rl = controls.regimeLeverageCaps || {};
+      const mp = controls.regimeMaxOpenPairs || {};
+      const pp = controls.regimePairNotionalPct || {};
+      const tp = controls.regimeTickerNotionalPct || {};
+      for (const r of [0,1,2,3]) {
+        const lev = Number(rl[r]);
+        const maxp = Number(mp[r]);
+        const pnot = Number(pp[r]);
+        const tnot = Number(tp[r]);
+        if (!isFinite(lev) || lev <= 0 || lev > 20) { setError(`Invalid leverage for regime ${r}`); setRunning(false); return; }
+        if (!Number.isInteger(maxp) || maxp < 0 || maxp > 200) { setError(`Invalid max pairs for regime ${r}`); setRunning(false); return; }
+        if (!isFinite(pnot) || pnot < 0 || pnot > 1) { setError(`Invalid pair notional pct for regime ${r}`); setRunning(false); return; }
+        if (!isFinite(tnot) || tnot < 0 || tnot > 1) { setError(`Invalid ticker notional pct for regime ${r}`); setRunning(false); return; }
+      }
+    }
     try {
       const overrides = {
         initialCapital:       Number(controls.initialCapital),
@@ -503,6 +423,13 @@ export default function App() {
         overrides,
         universe: controls.universe,
       };
+      // Attach regime maps if risk enabled
+      if (controls.useRisk) {
+        overrides.regimeLeverageCaps = controls.regimeLeverageCaps;
+        overrides.regimeMaxOpenPairs = controls.regimeMaxOpenPairs;
+        overrides.regimePairNotionalPct = controls.regimePairNotionalPct;
+        overrides.regimeTickerNotionalPct = controls.regimeTickerNotionalPct;
+      }
       const result = await runBacktest(payload);
       if (!result.ok) setError(result.error || "Backtest failed");
       await refreshData();
@@ -669,6 +596,9 @@ export default function App() {
             Enable Pair Re-selection
           </label>
         </div>
+        {controls.useRisk && (
+          <RiskControls controls={controls} setControls={setControls} setError={setError} />
+        )}
         {error ? <p className="error-text">⚠ {error}</p> : null}
       </section>
 
