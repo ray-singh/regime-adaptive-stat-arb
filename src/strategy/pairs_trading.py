@@ -162,19 +162,32 @@ class PairsSelector:
                 self.max_half_life,
             ))
 
-        # ── Parallel execution via ProcessPoolExecutor
-        # Use at most 4 workers (avoid over-subscribing on small universes)
-        n_workers = max(1, min(os.cpu_count() or 4, 4, (len(args_list) + 3) // 4))
+        # If the number of candidate pair-arg groups is small, run sequentially
+        # to avoid process startup / pickling overhead (common on macOS).
         pairs_result: list = []
-        try:
-            with ProcessPoolExecutor(max_workers=n_workers) as exe:
-                for res in exe.map(_test_pair_worker, args_list, chunksize=max(1, len(args_list) // (n_workers * 4))):
-                    if res is not None:
-                        pairs_result.append(res)
-        except Exception as exc:
-            # Fallback to sequential execution if multiprocessing fails (e.g. spawn issues)
-            logger.warning("Parallel pair testing failed (%s); falling back to sequential.", exc)
-            pairs_result = [r for a in args_list if (r := _test_pair_worker(a)) is not None]
+        if len(args_list) < 50:
+            if verbose:
+                logger.info("Running sequential pair tests (<=50 candidates): %d", len(args_list))
+            for a in args_list:
+                r = _test_pair_worker(a)
+                if r is not None:
+                    pairs_result.append(r)
+        else:
+            # ── Parallel execution via ProcessPoolExecutor
+            # Use at most 4 workers (avoid over-subscribing on small universes)
+            n_workers = max(1, min(os.cpu_count() or 4, 4, (len(args_list) + 3) // 4))
+            try:
+                with ProcessPoolExecutor(max_workers=n_workers) as exe:
+                    for res in exe.map(_test_pair_worker, args_list, chunksize=max(1, len(args_list) // (n_workers * 4))):
+                        if res is not None:
+                            pairs_result.append(res)
+            except Exception as exc:
+                # Fallback to sequential execution if multiprocessing fails (e.g. spawn issues)
+                logger.warning("Parallel pair testing failed (%s); falling back to sequential.", exc)
+                for a in args_list:
+                    r = _test_pair_worker(a)
+                    if r is not None:
+                        pairs_result.append(r)
 
         if verbose:
             logger.info("  %d cointegrated pairs found", len(pairs_result))
