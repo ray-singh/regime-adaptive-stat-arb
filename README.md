@@ -20,6 +20,11 @@ risk management, and dynamic pair re-selection.
 - **Job queue stability**: thread-safe `BacktestJobQueue` with proper shutdown, race-condition fixes, and eviction logic.
 - **Comprehensive testing**: 87 unit tests covering core modules (job queue, portfolio, risk manager, regime detection).
 
+## Disclaimer
+
+- **Not investment advice:** This project is provided for educational and research purposes only and is not investment, financial, or trading advice. It is not intended to recommend or endorse any specific trading strategy or security.
+- **Risk acknowledgment:** Backtests are simplifications of real markets; past performance does not guarantee future results and this system may not produce profitable strategies in live trading.
+
 ## Project Layout
 
 ```
@@ -59,28 +64,9 @@ pip install -r requirements.txt
 
 ```bash
 cd src
-python -m regime.demo_regime
-# outputs: data/plots/regime_detection.png and data/plots/pairs_trading.png
-```
-
 3) Run the full backtest (train/test split, in-sample pair selection, OOS backtest):
 
 ```bash
-cd src
-python -m backtest.run_backtest
-# outputs: data/plots/backtest_results.png and console performance summary
-```
-
-4) Run with CLI options:
-
-```bash
-cd src
-# Custom capital and re-selection frequency
-python -m backtest.run_backtest --capital 2000000 --reselect-interval 126
-
-# Disable risk manager
-python -m backtest.run_backtest --no-risk
-
 # Use a YAML config file
 python -m backtest.run_backtest --config ../config.example.yaml
 

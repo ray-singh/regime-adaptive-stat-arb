@@ -70,9 +70,37 @@ class PairReSelector:
 
     def should_reselect(self, bar_count: int) -> bool:
         """Return True if it's time to re-select pairs."""
-        if bar_count - self._last_reselection_bar >= self.reselection_interval:
-            return True
-        return False
+        # Default cadence
+        effective_interval = self.reselection_interval
+        return (bar_count - self._last_reselection_bar) >= effective_interval
+
+    def should_reselect_adaptive(self, bar_count: int, current_regime: int = None,
+                                 recent_regimes: list | None = None) -> bool:
+        """Adaptive re-selection: increase cadence when regimes change rapidly.
+
+        Parameters
+        ----------
+        bar_count: current bar index
+        current_regime: latest regime label (optional)
+        recent_regimes: list-like of recent regime labels (most-recent last)
+        """
+        # If no recent regime info, fall back to static cadence
+        if recent_regimes is None or len(recent_regimes) < 2:
+            return self.should_reselect(bar_count)
+
+        # Measure regime switches in a recent window (last 20 labels or available)
+        window = min(len(recent_regimes), 20)
+        window_slice = recent_regimes[-window:]
+        switches = sum(1 for i in range(1, len(window_slice)) if window_slice[i] != window_slice[i-1])
+
+        # If more than 2 switches in the short window, consider regime rapidly changing
+        if switches >= 2:
+            # increase cadence (halve the interval, minimum 1)
+            effective_interval = max(1, self.reselection_interval // 2)
+        else:
+            effective_interval = self.reselection_interval
+
+        return (bar_count - self._last_reselection_bar) >= effective_interval
 
     def reselect(
         self,

@@ -24,6 +24,8 @@ import pandas as pd
 
 from .events import MarketEvent, SignalEvent
 from .portfolio import Portfolio
+from strategy.kalman_hedge import KalmanHedge
+from strategy.meta_signal import MetaSignalModel, MetaSignalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +78,15 @@ class PairConfig:
                  entry_z: float, exit_z: float, stop_z: float):
         self.ticker1      = ticker1
         self.ticker2      = ticker2
-        self.hedge_ratio  = hedge_ratio
+        self.hedge_ratio_static  = hedge_ratio  # initial static hedge
+        self.hedge_ratio  = hedge_ratio        # current (dynamic) hedge ratio
         self.entry_z      = entry_z
         self.exit_z       = exit_z
         self.stop_z       = stop_z
         self.pair_id      = f"{ticker1}/{ticker2}"
         self.position: int = 0   # -1 / 0 / +1
+        # Kalman filter for dynamic hedge ratio estimation
+        self.kalman_hedge = KalmanHedge(initial_hedge=hedge_ratio, process_variance=0.0001)
 
 
 class PairsBacktestStrategy:
@@ -175,6 +180,14 @@ class PairsBacktestStrategy:
         self._pair_reselector = pair_reselector
         self._reselection_signals: List[SignalEvent] = []
 
+        # Meta-signal model for regime-dependent signal combination and thresholds
+        meta_cfg = MetaSignalConfig(
+            use_learned_weights=False,
+            regime_entry_thresholds=regime_entry_z_map or DEFAULT_REGIME_ENTRY_Z,
+            regime_exit_thresholds=regime_exit_z_map or DEFAULT_REGIME_EXIT_Z,
+        )
+        self._meta_signal = MetaSignalModel(config=meta_cfg)
+
         self._bar_count = 0
         # Regime update throttle — regime labels change slowly, no need to
         # re-predict on every single bar.
@@ -243,6 +256,12 @@ class PairsBacktestStrategy:
 
         s1 = np.array(buf1[-n:], dtype=float)
         s2 = np.array(buf2[-n:], dtype=float)
+        
+        # Update Kalman hedge ratio with latest prices
+        p1_current = s1[-1]
+        p2_current = s2[-1]
+        pc.hedge_ratio, _ = pc.kalman_hedge.update(p1_current, p2_current)
+        
         spread = s1 - pc.hedge_ratio * s2
 
         win = min(self.zscore_window, n)
@@ -257,20 +276,21 @@ class PairsBacktestStrategy:
         new_dir = None
         cur     = pc.position
 
-        # Regime-adaptive thresholds (spec §3.4)
-        entry_z_eff = self._regime_entry_z_map.get(self._current_regime, pc.entry_z)
-        exit_z_eff  = self._regime_exit_z_map.get(self._current_regime, pc.exit_z)
+        # Regime-adaptive thresholds (spec §3.4) via meta-signal model
+        entry_z_eff = self._meta_signal.get_entry_threshold(self._current_regime)
+        exit_z_eff  = self._meta_signal.get_exit_threshold(self._current_regime)
 
         # Exit / stop
         if cur != 0:
-            if abs(z) < exit_z_eff or abs(z) > pc.stop_z:
+            stop_loss_eff = self._meta_signal.get_stop_loss_threshold(self._current_regime)
+            if abs(z) < exit_z_eff or abs(z) > stop_loss_eff:
                 new_dir = "flat"
 
         if new_dir is None:
             # Entry — use regime-adaptive entry threshold
             if cur == 0:
-                regime_scale = self._regime_size_map.get(self._current_regime, 1.0)
-                if regime_scale == 0.0:
+                regime_scale = self._meta_signal.get_position_scale(self._current_regime)
+                if regime_scale <= 0.0:
                     return None      # regime blocks new entries
 
                 if z < -entry_z_eff:
@@ -290,7 +310,7 @@ class PairsBacktestStrategy:
             elif new_dir == "short_spread":
                 pc.position = -1
 
-            regime_scale = self._regime_size_map.get(self._current_regime, 1.0) if new_dir != "flat" else 1.0
+            regime_scale = self._meta_signal.get_position_scale(self._current_regime) if new_dir != "flat" else 1.0
             return SignalEvent(
                 date        = event.date,
                 ticker1     = pc.ticker1,
@@ -350,7 +370,19 @@ class PairsBacktestStrategy:
 
         Returns flat signals for any removed pairs.
         """
-        if not self._pair_reselector.should_reselect(self._bar_count):
+        # Prefer adaptive re-selection when regime history is available
+        recent_regimes = list(r for _, r in self._regime_history[-40:]) if self._regime_history else None
+        try:
+            should = self._pair_reselector.should_reselect_adaptive(
+                self._bar_count,
+                current_regime=self._current_regime,
+                recent_regimes=recent_regimes,
+            )
+        except AttributeError:
+            # Fallback for older PairReSelector implementations
+            should = self._pair_reselector.should_reselect(self._bar_count)
+
+        if not should:
             return []
 
         # Build a wide price DataFrame from buffers
@@ -399,8 +431,10 @@ class PairsBacktestStrategy:
         for row in new_pairs_df.itertuples(index=False):
             pid = f"{row.ticker1}/{row.ticker2}"
             if pid in pairs_by_id:
-                # Update hedge ratio for existing pair
+                # Update hedge ratio for existing pair and reset Kalman
                 pairs_by_id[pid].hedge_ratio = row.hedge_ratio
+                pairs_by_id[pid].hedge_ratio_static = row.hedge_ratio
+                pairs_by_id[pid].kalman_hedge.reset(initial_hedge=row.hedge_ratio)
             elif pid in added:
                 # Add new pair
                 new_pc = PairConfig(

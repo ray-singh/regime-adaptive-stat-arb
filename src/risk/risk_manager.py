@@ -325,8 +325,12 @@ class RiskManager:
             return True
         if order.pair_id in self._open_pair_ids:
             return True   # already open — allow adjustments
-        if len(self._open_pair_ids) >= self.cfg.max_open_pairs:
-            self._reject(order, f"max open pairs ({self.cfg.max_open_pairs}) reached")
+        # Use per-regime override when available
+        regime_override = self.cfg.regime_max_open_pairs.get(self._current_regime, self.cfg.max_open_pairs)
+        # Respect the global max_open_pairs while allowing regime to further restrict it
+        max_pairs_cap = min(self.cfg.max_open_pairs, regime_override)
+        if len(self._open_pair_ids) >= max_pairs_cap:
+            self._reject(order, f"max open pairs ({max_pairs_cap}) reached for regime {self._current_regime}")
             return False
         return True
 
