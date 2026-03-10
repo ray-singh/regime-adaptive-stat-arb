@@ -40,6 +40,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import PlatformConfig, setup_logging
+from pathlib import Path
 from data.yfinance_client import YFinanceClient
 from features.featurize import compute_standard_features
 from regime.hmm_detector import HMMRegimeDetector
@@ -83,6 +84,8 @@ def parse_args() -> argparse.Namespace:
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     p.add_argument("--log-file", type=str, default=None,
                    help="Also write logs to this file")
+    p.add_argument("--no-plot", action="store_true",
+                   help="Disable generating pyplot figures (faster)")
     return p.parse_args()
 
 
@@ -114,15 +117,44 @@ def build_config(args: argparse.Namespace) -> PlatformConfig:
 # Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_wide_prices(tickers, period, interval) -> tuple[pd.DataFrame, dict]:
+def fetch_wide_prices(tickers, period, interval, cache_dir: str | None = None) -> tuple[pd.DataFrame, dict]:
     """Returns (wide_price_df, per_ticker_feature_dict)."""
     client = YFinanceClient()
     price_dict, feature_dict = {}, {}
+    # Prepare disk cache directory (per-ticker, keyed by period+interval)
+    cache_path = Path(cache_dir) if cache_dir else None
+    features_cache_dir = None
+    if cache_path is not None:
+        features_cache_dir = cache_path.joinpath("features")
+        try:
+            features_cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            features_cache_dir = None
 
     for t in tickers:
         try:
-            raw  = client.fetch_ticker(t, period=period, interval=interval, use_cache=True)
-            feat = compute_standard_features(raw)
+            # Attempt to load cached feature frame first
+            feat = None
+            cache_file = None
+            if features_cache_dir is not None:
+                safe_t = str(t).replace("/", "_").replace("^", "^")
+                cache_file = features_cache_dir.joinpath(f"{safe_t}__{period}__{interval}.pkl")
+                if cache_file.exists():
+                    try:
+                        feat = pd.read_pickle(cache_file)
+                        logger.info("Loaded features from cache for %s", t)
+                    except Exception:
+                        feat = None
+
+            if feat is None:
+                raw = client.fetch_ticker(t, period=period, interval=interval, use_cache=True)
+                feat = compute_standard_features(raw)
+                # persist to cache for later runs
+                if cache_file is not None:
+                    try:
+                        feat.to_pickle(cache_file)
+                    except Exception:
+                        pass
             feat.index = pd.to_datetime(feat["Date"]).dt.tz_localize(None)
             price_col = "adj_close" if "adj_close" in feat.columns else "close"
             price_dict[t]   = feat[price_col].rename(t)
@@ -322,7 +354,7 @@ def compute_regime_performance(
     return pd.DataFrame(rows).set_index("Regime") if rows else pd.DataFrame()
 
 
-def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
+def run_backtest(cfg: PlatformConfig, use_risk: bool = True, use_plot: bool = True) -> dict:
     print("=" * 64)
     print("  Regime-Adaptive Pairs Backtest")
     print("=" * 64)
@@ -561,7 +593,7 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
             print(regime_perf.to_string())
 
     # Plots
-    _make_plots(results, pairs_df, cfg)
+            _make_plots(results, pairs_df, cfg, use_plot=use_plot)
 
     # MLflow logging: metrics, artifacts, and HMM internals
     if _HAS_MLFLOW and mlflow_run is not None:
@@ -610,7 +642,7 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True) -> dict:
 # Plots
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_plots(results: dict, pairs_df: pd.DataFrame, cfg: PlatformConfig) -> None:
+def _make_plots(results: dict, pairs_df: pd.DataFrame, cfg: PlatformConfig, use_plot: bool = True) -> None:
     os.makedirs(cfg.plots_dir, exist_ok=True)
 
     eq      = results.get("equity_curve", pd.Series(dtype=float))
@@ -720,12 +752,16 @@ def _make_plots(results: dict, pairs_df: pd.DataFrame, cfg: PlatformConfig) -> N
         ax6.set_xticks([])
         ax6.set_yticks([])
 
-    fig.suptitle("Regime-Adaptive Pairs Trading Backtest", fontsize=14, fontweight="bold")
+    if use_plot:
+        fig.suptitle("Regime-Adaptive Pairs Trading Backtest", fontsize=14, fontweight="bold")
 
-    out = os.path.join(cfg.plots_dir, "backtest_results.png")
-    plt.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"\n  Backtest plot saved → {out}")
-    plt.close(fig)
+        out = os.path.join(cfg.plots_dir, "backtest_results.png")
+        plt.savefig(out, dpi=150, bbox_inches="tight")
+        print(f"\n  Backtest plot saved → {out}")
+        plt.close(fig)
+    else:
+        # Free the figure without rendering to file to avoid heavy text layout work
+        plt.close(fig)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -735,7 +771,8 @@ def main():
     cfg = build_config(args)
     setup_logging(level=cfg.log_level, log_file=args.log_file)
     use_risk = not args.no_risk
-    run_backtest(cfg, use_risk=use_risk)
+    use_plot = not getattr(args, "no_plot", False)
+    run_backtest(cfg, use_risk=use_risk, use_plot=use_plot)
 
 
 if __name__ == "__main__":

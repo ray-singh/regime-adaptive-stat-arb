@@ -1,7 +1,15 @@
 """Regime detection modules."""
 
-from .hmm_detector import HMMRegimeDetector
+try:
+    from .hmm_detector import HMMRegimeDetector
+except ImportError:  # hmmlearn is optional
+    HMMRegimeDetector = None  # type: ignore[assignment,misc]
+
 from .volatility_detector import VolatilityRegimeDetector
-from .clustering_detector import ClusteringRegimeDetector
+
+try:
+    from .clustering_detector import ClusteringRegimeDetector
+except ImportError:  # scikit-learn is optional
+    ClusteringRegimeDetector = None  # type: ignore[assignment,misc]
 
 __all__ = ["HMMRegimeDetector", "VolatilityRegimeDetector", "ClusteringRegimeDetector"]

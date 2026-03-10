@@ -31,7 +31,6 @@ import {
   runBacktest,
 } from "./api";
 
-import ScenarioStrip from "./components/ScenarioStrip";
 import RiskControls from "./components/RiskControls";
 import { REGIME_META, DEFAULT_CONTROLS } from "./controls";
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -537,9 +536,6 @@ export default function App() {
           <button className="ghost-button" onClick={refreshData}>⟳ Refresh</button>
         </div>
       </section>
-
-      {/* ── Story Mode Scenario Presets ── */}
-      <ScenarioStrip activeId={activeScenario} onSelect={applyScenario} />
 
       {/* ── Controls ── */}
       <section className="control-grid">

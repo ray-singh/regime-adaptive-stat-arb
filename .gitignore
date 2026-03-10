@@ -213,3 +213,6 @@ __marimo__/
 specs.txt
 training_guide.txt
 gitignore
+
+data/analysis_best_run
+data/analysis_low_turnover

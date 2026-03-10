@@ -92,6 +92,7 @@ class BacktestJobQueue:
         self._runner   = runner
         self._lock     = threading.Lock()
         self._jobs:    dict[str, BacktestJob] = {}
+        self._shutdown = False
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="backtest-worker",
@@ -102,20 +103,26 @@ class BacktestJobQueue:
     # ------------------------------------------------------------------
 
     def submit(self, payload: dict) -> str:
-        """Enqueue a backtest job.  Returns job_id immediately."""
-        job_id = uuid.uuid4().hex[:12]
-        job = BacktestJob(
-            job_id=job_id,
-            payload=payload,
-            status=JobStatus.PENDING,
-            submitted_at=_utcnow(),
-        )
+        """Enqueue a backtest job.  Returns job_id immediately.
+
+        The future is stored on the job *inside* the same lock acquisition
+        that registers the job, ensuring cancel() always sees a valid future.
+        """
         with self._lock:
+            if self._shutdown:
+                raise RuntimeError("BacktestJobQueue has been shut down")
+            job_id = uuid.uuid4().hex[:12]
+            job = BacktestJob(
+                job_id=job_id,
+                payload=payload,
+                status=JobStatus.PENDING,
+                submitted_at=_utcnow(),
+            )
             self._evict_old_jobs()
             self._jobs[job_id] = job
-
-        future = self._executor.submit(self._run_job, job_id)
-        with self._lock:
+            # Submit inside the lock so _future is set before any concurrent
+            # cancel() call can observe this job with _future=None.
+            future = self._executor.submit(self._run_job, job_id)
             job._future = future
 
         logger.info("Job %s submitted (queue depth: %d)", job_id, len(self._jobs))
@@ -146,6 +153,18 @@ class BacktestJobQueue:
                 job.finished_at = _utcnow()
                 logger.info("Job %s canceled", job_id)
             return cancelled
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Gracefully shut down the executor.
+
+        After this call, any further ``submit()`` calls will raise
+        ``RuntimeError``.  In-flight jobs are allowed to finish when
+        *wait* is True (the default).
+        """
+        with self._lock:
+            self._shutdown = True
+        self._executor.shutdown(wait=wait)
+        logger.info("BacktestJobQueue shut down (wait=%s)", wait)
 
     def list_jobs(self, limit: int = 50) -> list[dict]:
         """Return summary dicts for the most-recent *limit* jobs."""
