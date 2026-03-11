@@ -5,15 +5,6 @@ export async function getHealth() {
   return response.json();
 }
 
-export async function runBacktest(payload) {
-  const response = await fetch(`${API_BASE}/api/run-backtest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload ?? {}),
-  });
-  return response.json();
-}
-
 export async function getSummary() {
   const response = await fetch(`${API_BASE}/api/summary`);
   return response.json();

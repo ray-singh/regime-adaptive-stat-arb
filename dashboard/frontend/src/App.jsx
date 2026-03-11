@@ -36,7 +36,6 @@ import {
   getRollingSharpe,
   getSummary,
   getTradesWithPnL,
-  runBacktest,
   runDiscovery,
   getDiscoveryStatus,
 } from "./api";
@@ -146,26 +145,14 @@ export default function App() {
   const [health,           setHealth]           = useState(null);
   const [summary,          setSummary]          = useState(null);
   const [equity,           setEquity]           = useState([]);
-  const [drawdown,         setDrawdown]         = useState([]);
-  const [rollingSharpe,    setRollingSharpe]    = useState([]);
-  const [trades,           setTrades]           = useState([]);
   const [closedTrades,     setClosedTrades]     = useState([]);
-  const [pairs,            setPairs]            = useState([]);
   const [regimeSeries,     setRegimeSeries]     = useState([]);
-  const [regimePerf,       setRegimePerf]       = useState([]);
   const [controls,         setControls]         = useState(() => {
     try {
       const saved = window.localStorage.getItem("dashboard_controls");
       return saved ? JSON.parse(saved) : DEFAULT_CONTROLS;
     } catch { return DEFAULT_CONTROLS; }
   });
-  const [hmmInfo,          setHmmInfo]          = useState(null);
-  const [running,  setRunning]  = useState(false);
-  const [error,    setError]    = useState("");
-  const [chartRange,     setChartRange]     = useState({ start: null, end: null });
-  const [activeScenario, setActiveScenario] = useState(null);
-  const [showSlide,      setShowSlide]      = useState(false);
-  const [activeEvt,      setActiveEvt]      = useState(null);
 
   // ── Discovery state ──────────────────────────────────────────────────────
   const [discoveryRunning,  setDiscoveryRunning]  = useState(false);

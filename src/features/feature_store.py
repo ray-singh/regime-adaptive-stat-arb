@@ -5,6 +5,8 @@ Stores per-ticker feature Parquet files and provides batch computation helpers.
 
 from pathlib import Path
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from typing import Optional, List
 from .featurize import compute_standard_features
 import logging
@@ -37,8 +39,9 @@ class FeatureStore:
         df_feats = compute_standard_features(raw_df, windows=windows)
         path = self._path_for(ticker)
         try:
-            df_feats.to_parquet(path, index=False, compression='snappy')
-            logger.info(f"Saved features for {ticker} to {path}")
+            table = pa.Table.from_pandas(df_feats, preserve_index=False)
+            pq.write_table(table, path, compression='snappy')
+            logger.info(f"Saved features for {ticker} to {path} ({table.num_rows} rows, {table.num_columns} cols)")
         except Exception as e:
             logger.warning(f"Failed to save features for {ticker}: {e}")
         return df_feats
@@ -50,7 +53,7 @@ class FeatureStore:
             logger.info(f"Feature file not found for {ticker}: {path}")
             return pd.DataFrame()
         try:
-            df = pd.read_parquet(path)
+            df = pq.read_table(path).to_pandas()
             return df
         except Exception as e:
             logger.warning(f"Failed to load features for {ticker}: {e}")
@@ -102,8 +105,9 @@ class FeatureStore:
         features = compute_market_features(wide_df, window=window)
         path = self.cache_dir / f"{filename}.parquet"
         try:
-            features.to_parquet(path, compression="snappy")
-            logger.info(f"Saved market features ({len(features)} rows) to {path}")
+            table = pa.Table.from_pandas(features, preserve_index=True)
+            pq.write_table(table, path, compression='snappy')
+            logger.info(f"Saved market features ({len(features)} rows, {table.num_columns} cols) to {path}")
         except Exception as e:
             logger.warning(f"Failed to save market features: {e}")
         return features
@@ -115,7 +119,7 @@ class FeatureStore:
             logger.info(f"Market feature file not found: {path}")
             return pd.DataFrame()
         try:
-            df = pd.read_parquet(path)
+            df = pq.read_table(path).to_pandas()
             df.index = pd.to_datetime(df.index)
             return df
         except Exception as e:

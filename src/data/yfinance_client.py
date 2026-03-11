@@ -8,6 +8,8 @@ with error handling, retry logic, and efficient bulk downloads.
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 from typing import List, Optional, Dict, Union
 from datetime import datetime, timedelta
 import time
@@ -359,8 +361,9 @@ class YFinanceClient:
         
         try:
             cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
-            df.to_parquet(cache_file, index=False, compression='snappy')
-            logger.debug(f"Cached {ticker} to {cache_file}")
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            pq.write_table(table, cache_file, compression='snappy')
+            logger.debug(f"Cached {ticker} to {cache_file} ({table.num_rows} rows)")
         except Exception as e:
             logger.warning(f"Failed to cache {ticker}: {str(e)}")
     
@@ -372,7 +375,7 @@ class YFinanceClient:
         try:
             cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
             if cache_file.exists():
-                df = pd.read_parquet(cache_file)
+                df = pq.read_table(cache_file).to_pandas()
                 df['Date'] = pd.to_datetime(df['Date'])
                 # Normalize timezone to naive
                 try:

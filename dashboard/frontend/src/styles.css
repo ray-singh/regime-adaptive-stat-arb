@@ -965,3 +965,18 @@ th {
   border-bottom: 2px solid transparent;
   font-size: 0.9rem;
 }
+
+/* Ensure all Recharts tooltip text is rendered in white for readability */
+.recharts-default-tooltip,
+.recharts-tooltip-wrapper,
+.recharts-tooltip-item,
+.recharts-default-tooltip .label,
+.recharts-default-tooltip .value,
+.recharts-default-tooltip .name {
+  color: #ffffff !important;
+}
+
+/* Also force color for any nested tooltip text nodes */
+.recharts-tooltip-wrapper * {
+  color: #ffffff !important;
+}

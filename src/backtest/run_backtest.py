@@ -363,18 +363,47 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True, use_plot: bool = Tr
     mlflow_run = None
     if _HAS_MLFLOW:
         try:
+            import datetime as _dt
             exp_name = getattr(cfg.backtest, "experiment_name", "regime-adaptive-backtests")
+            run_name = f"backtest_{_dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
             mlflow.set_experiment(exp_name)
-            mlflow_run = mlflow.start_run()
-            # Log a few key params (best-effort)
+            mlflow_run = mlflow.start_run(run_name=run_name)
+            # Tags: high-level identifiers useful for filtering runs in the UI
             try:
-                mlflow.log_params({
+                mlflow.set_tags({
+                    "regime_ticker": str(cfg.regime.regime_ticker),
+                    "tickers": ",".join(str(t) for t in cfg.data.tickers[:10]),
+                    "n_tickers": str(len(cfg.data.tickers)),
+                    "period": str(cfg.data.period),
+                })
+            except Exception:
+                pass
+            # Full config params
+            try:
+                all_params: dict = {
                     "initial_capital": float(cfg.backtest.initial_capital),
                     "train_pct": float(cfg.backtest.train_pct),
+                    "target_notional_pct": float(cfg.backtest.target_notional_pct),
                     "max_pairs": int(cfg.pairs.max_pairs),
+                    "pvalue_threshold": float(cfg.pairs.pvalue_threshold),
+                    "min_half_life": float(cfg.pairs.min_half_life),
+                    "max_half_life": float(cfg.pairs.max_half_life),
+                    "zscore_window": int(cfg.pairs.zscore_window),
+                    "entry_z": float(cfg.pairs.entry_z),
+                    "exit_z": float(cfg.pairs.exit_z),
+                    "stop_z": float(cfg.pairs.stop_z),
+                    "warmup_bars": int(cfg.pairs.warmup_bars),
                     "n_states": int(cfg.regime.n_states),
                     "use_walkforward": bool(cfg.regime.use_walkforward),
-                })
+                    "slippage_bps": float(cfg.execution.slippage_bps),
+                    "commission_pct": float(cfg.execution.commission_pct),
+                    "max_gross_leverage": float(cfg.risk.max_gross_leverage),
+                    "drawdown_halt_pct": float(cfg.risk.drawdown_halt_pct),
+                    "reselection_enabled": bool(cfg.reselection.enabled),
+                    "reselection_interval_days": int(cfg.reselection.interval_days),
+                }
+                # MLflow limits param count; log in one call, extras silently ignored
+                mlflow.log_params(all_params)
             except Exception:
                 pass
         except Exception:
@@ -614,21 +643,69 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True, use_plot: bool = Tr
     if _HAS_MLFLOW and mlflow_run is not None:
         try:
             stats = results.get("stats", {})
-            # log scalar metrics
+            # --- scalar performance metrics ---
             for k, v in stats.items():
                 try:
                     mlflow.log_metric(k, float(v))
                 except Exception:
                     pass
 
-            # regime performance -> CSV artifact
+            # --- pairs selected metric ---
+            try:
+                mlflow.log_metric("n_pairs_selected", float(len(pairs_df)))
+                mlflow.log_metric("pair_reselection_count", float(results.get("pair_reselection_count", 0)))
+            except Exception:
+                pass
+
+            # --- equity curve -> Parquet artifact (native PyArrow) ---
+            try:
+                import pyarrow as pa
+                import pyarrow.parquet as pq
+                equity = results.get("equity_curve")
+                if equity is not None and not equity.empty:
+                    eq_df = equity.reset_index()
+                    eq_df.columns = ["date", "equity"]
+                    eq_path = os.path.join(cfg.plots_dir, "equity_curve.parquet")
+                    pq.write_table(pa.Table.from_pandas(eq_df, preserve_index=False), eq_path, compression="snappy")
+                    mlflow.log_artifact(eq_path, artifact_path="timeseries")
+            except Exception:
+                pass
+
+            # --- trades -> CSV artifact ---
+            try:
+                trades = results.get("trades")
+                if trades is not None and not getattr(trades, "empty", True):
+                    trades_csv = os.path.join(cfg.plots_dir, "trades.csv")
+                    trades.to_csv(trades_csv)
+                    mlflow.log_artifact(trades_csv, artifact_path="trades")
+            except Exception:
+                pass
+
+            # --- selected pairs -> CSV artifact ---
+            try:
+                sp_csv = os.path.join(cfg.plots_dir, "selected_pairs.csv")
+                pairs_df.to_csv(sp_csv, index=False)
+                mlflow.log_artifact(sp_csv, artifact_path="pairs")
+            except Exception:
+                pass
+
+            # --- per-regime performance metrics & CSV artifact ---
             rp = results.get("regime_performance")
             if rp is not None and not rp.empty:
                 rp_csv = os.path.join(cfg.plots_dir, "regime_performance.csv")
                 rp.to_csv(rp_csv)
                 mlflow.log_artifact(rp_csv, artifact_path="regime_performance")
+                # Also surface per-regime scalars so they're queryable in the MLflow UI
+                for regime_label, row in rp.iterrows():
+                    safe_label = str(regime_label).lower().replace(" ", "_")
+                    for col in ["Ann Return %", "Sharpe", "Ann Vol %", "Trades", "Days"]:
+                        if col in rp.columns:
+                            try:
+                                mlflow.log_metric(f"regime_{safe_label}_{col.lower().replace(' ', '_').replace('%', 'pct')}", float(row[col]))
+                            except Exception:
+                                pass
 
-            # HMM internals -> JSON artifact
+            # --- HMM internals -> JSON artifact ---
             hmm_json = os.path.join(cfg.plots_dir, "hmm_info.json")
             try:
                 with open(hmm_json, "w") as fh:
@@ -637,7 +714,7 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True, use_plot: bool = Tr
             except Exception:
                 pass
 
-            # plots
+            # --- plots ---
             plot_path = os.path.join(cfg.plots_dir, "backtest_results.png")
             if os.path.exists(plot_path):
                 mlflow.log_artifact(plot_path, artifact_path="plots")

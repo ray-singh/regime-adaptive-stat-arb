@@ -34,6 +34,13 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+try:
+    import mlflow as _mlflow
+    _HAS_MLFLOW = True
+except Exception:
+    _mlflow = None  # type: ignore[assignment]
+    _HAS_MLFLOW = False
+
 
 class PairRankingEngine:
     """Score and rank pairs by interestingness.
@@ -123,7 +130,25 @@ class PairRankingEngine:
         ]
         present = [c for c in front if c in df.columns]
         rest = [c for c in df.columns if c not in front]
-        return df[present + rest].reset_index(drop=True)
+        ranked = df[present + rest].reset_index(drop=True)
+
+        # --- MLflow: log ranking summary metrics if a run is active ---
+        if _HAS_MLFLOW:
+            try:
+                if _mlflow.active_run() is not None:
+                    _mlflow.log_metric("ranking.n_pairs", float(len(ranked)))
+                    if not ranked.empty:
+                        _mlflow.log_metric("ranking.top_score", float(ranked["score"].iloc[0]))
+                        _mlflow.log_metric("ranking.mean_score", float(ranked["score"].mean()))
+                        _mlflow.log_metric("ranking.mean_half_life", float(ranked["best_half_life_days"].mean()))
+                        _mlflow.log_metric("ranking.median_pvalue", float(ranked["best_coint_pvalue"].median()))
+                        stab_counts = ranked["stability_label"].value_counts().to_dict()
+                        for label, count in stab_counts.items():
+                            _mlflow.log_metric(f"ranking.stability_{label}", float(count))
+            except Exception:
+                pass  # Never let MLflow failures break ranking
+
+        return ranked
 
     def top_n(self, pair_summary: pd.DataFrame, n: int = 20) -> pd.DataFrame:
         """Return the top-N ranked pairs."""
