@@ -303,8 +303,20 @@ class YFinanceClient:
         # Remove rows with null prices
         df = df.dropna(subset=['open', 'high', 'low', 'close'])
         
-        # Ensure proper datatypes
+        # Ensure proper datatypes and normalize timezone to naive
         df['Date'] = pd.to_datetime(df['Date'])
+        try:
+            idx = df['Date']
+            # If tz-aware, convert to UTC then drop tz info; else ensure no tz
+            if getattr(idx.dt, 'tz', None) is not None:
+                df['Date'] = idx.dt.tz_convert('UTC').dt.tz_localize(None)
+            else:
+                df['Date'] = idx.dt.tz_localize(None)
+        except Exception:
+            try:
+                df['Date'] = df['Date'].dt.tz_localize(None)
+            except Exception:
+                pass
         
         return df
     
@@ -362,6 +374,18 @@ class YFinanceClient:
             if cache_file.exists():
                 df = pd.read_parquet(cache_file)
                 df['Date'] = pd.to_datetime(df['Date'])
+                # Normalize timezone to naive
+                try:
+                    idx = df['Date']
+                    if getattr(idx.dt, 'tz', None) is not None:
+                        df['Date'] = idx.dt.tz_convert('UTC').dt.tz_localize(None)
+                    else:
+                        df['Date'] = idx.dt.tz_localize(None)
+                except Exception:
+                    try:
+                        df['Date'] = df['Date'].dt.tz_localize(None)
+                    except Exception:
+                        pass
                 return df
         except Exception as e:
             logger.warning(f"Failed to load cache for {ticker}: {str(e)}")
@@ -414,7 +438,24 @@ class YFinanceClient:
 
         col = price_col if price_col in long_df.columns else "close"
         wide = long_df.pivot_table(index="Date", columns="ticker", values=col, aggfunc="last")
-        wide.index = pd.to_datetime(wide.index)
+        # Normalize index to timezone-naive DatetimeIndex to avoid tz-aware
+        # comparison issues elsewhere in the codebase.
+        idx = pd.to_datetime(wide.index)
+        try:
+            if getattr(idx, "tz", None) is not None:
+                # tz-aware index -> convert to UTC then drop tz
+                idx = idx.tz_convert("UTC").tz_localize(None)
+            else:
+                idx = idx.tz_localize(None)
+        except Exception:
+            try:
+                idx = idx.tz_localize(None)
+            except Exception:
+                try:
+                    idx = idx.tz_convert(None)
+                except Exception:
+                    pass
+        wide.index = idx
         wide.sort_index(inplace=True)
         return wide
 

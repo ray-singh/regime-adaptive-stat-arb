@@ -15,9 +15,13 @@ SRC_DIR = os.path.join(ROOT_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
+import logging
+
 from config import PlatformConfig, setup_logging
 from backtest.run_backtest import run_backtest
 from backtest.job_queue import BacktestJobQueue, JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,7 +35,82 @@ class BacktestStore:
     cache: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class DiscoveryStore:
+    """In-memory state for the pair-discovery pipeline."""
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    running: bool = False
+    last_error: Optional[str] = None
+    result: Optional[dict[str, Any]] = None  # keys: pairs_df, pair_summary, ranked, regime_series, price_matrix
+
+
 store = BacktestStore()
+discovery_store = DiscoveryStore()
+
+
+def _run_discovery_pipeline(payload: dict) -> dict:
+    """Run the full pair-discovery pipeline and return all intermediate results."""
+    import pandas as pd
+    from data.yfinance_client import YFinanceClient
+    from features.featurize import compute_market_features
+    from regime.hmm_detector import HMMRegimeDetector
+    from pair_discovery import PairDiscoveryEngine
+    from relationship_analysis import RelationshipAnalyzer
+    from pair_ranking import PairRankingEngine
+
+    cfg = PlatformConfig()
+    tickers: list = payload.get("tickers") or getattr(cfg.data, "tickers", []) or []
+    start_date: str = payload.get("startDate") or getattr(cfg.data, "start_date", "2018-01-01") or "2018-01-01"
+    end_date: Optional[str] = payload.get("endDate") or getattr(cfg.data, "end_date", None)
+    n_states: int = int(payload.get("nStates") or getattr(cfg.regime, "n_states", 3) or 3)
+    min_train_years: int = int(payload.get("minTrainYears") or 2)
+    min_regime_bars: int = int(payload.get("minRegimeBars") or 30)
+
+    if not tickers:
+        raise ValueError("No tickers configured. Pass 'tickers' in the request body or set DataConfig.tickers.")
+
+    # 1. Fetch price matrix
+    client = YFinanceClient(cache_dir=os.path.join(ROOT_DIR, "data", "cache"))
+    price_matrix = client.get_price_matrix(tickers, start_date=start_date, end_date=end_date)
+    if price_matrix.empty:
+        raise ValueError("Price matrix is empty — check tickers and date range.")
+
+    # 2. Compute cross-asset market features
+    market_features = compute_market_features(price_matrix)
+
+    # 3. Detect regimes using market features
+    hmm_feature_cols = ["avg_rv", "ret_dispersion", "index_momentum"]
+    detector = HMMRegimeDetector(n_states=n_states, feature_cols=hmm_feature_cols)
+    feature_df = market_features[hmm_feature_cols].dropna()
+    regime_series: pd.Series = detector.fit_predict_walkforward(
+        feature_df, min_train_years=min_train_years
+    )
+    regime_series = regime_series.dropna().astype(int)
+
+    # 4. Discover pairs per regime
+    engine = PairDiscoveryEngine(min_regime_bars=min_regime_bars)
+    pairs_df = engine.discover(price_matrix, regime_series, tickers=tickers)
+
+    # 5. Analyse relationships
+    pair_regime_stats: pd.DataFrame
+    pair_summary: pd.DataFrame
+    analyzer = RelationshipAnalyzer(price_matrix=price_matrix)
+    pair_regime_stats, pair_summary = analyzer.analyse(pairs_df, regime_series)
+
+    # 6. Rank pairs
+    ranker = PairRankingEngine()
+    ranked = ranker.rank(pair_summary) if not pair_summary.empty else pair_summary
+
+    return {
+        "pairs_df": pairs_df,
+        "pair_regime_stats": pair_regime_stats,
+        "pair_summary": pair_summary,
+        "ranked": ranked,
+        "regime_series": regime_series,
+        "price_matrix": price_matrix,
+        "market_features": market_features,
+    }
 
 
 def _run_backtest_from_payload(payload: dict) -> dict:
@@ -528,6 +607,207 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": f"Cannot cancel a {job.status.value} job"}), 409
         ok = job_queue.cancel(job_id)
         return jsonify({"ok": ok})
+
+    # ── Pair-discovery endpoints (spec §4–6) ────────────────────────────────
+
+    @app.post("/api/discover")
+    def start_discovery() -> Any:
+        """Start the pair-discovery pipeline in a background thread.
+
+        Accepts JSON body with optional fields:
+          - tickers : list[str]   (overrides config default)
+          - startDate : str       (YYYY-MM-DD)
+          - endDate   : str       (YYYY-MM-DD, optional)
+          - nStates   : int       (number of HMM regimes, default 3)
+        """
+        payload = request.get_json(silent=True) or {}
+        with discovery_store.lock:
+            if discovery_store.running:
+                return jsonify({"ok": False, "error": "Discovery already running"}), 409
+            discovery_store.running = True
+            discovery_store.last_error = None
+
+        def _run() -> None:
+            try:
+                result = _run_discovery_pipeline(payload)
+                with discovery_store.lock:
+                    discovery_store.result = result
+            except Exception as exc:
+                logger.exception("Discovery pipeline error")
+                with discovery_store.lock:
+                    discovery_store.last_error = str(exc)
+            finally:
+                with discovery_store.lock:
+                    discovery_store.running = False
+
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({"ok": True, "status": "running"}), 202
+
+    @app.get("/api/discovery/status")
+    def discovery_status() -> Any:
+        """Poll the current state of the discovery pipeline."""
+        with discovery_store.lock:
+            return jsonify({
+                "ok": True,
+                "running": discovery_store.running,
+                "hasResult": discovery_store.result is not None,
+                "error": discovery_store.last_error,
+            })
+
+    @app.get("/api/pairs/ranked")
+    def ranked_pairs() -> Any:
+        """Return the ranked pairs table (spec §6)."""
+        with discovery_store.lock:
+            result = discovery_store.result
+        if result is None:
+            return jsonify({"ok": False, "error": "No discovery run yet"}), 404
+        ranked = result.get("ranked")
+        if ranked is None or ranked.empty:
+            return jsonify({"ok": True, "pairs": []})
+        return jsonify({"ok": True, "pairs": _to_jsonable(ranked.reset_index(drop=True))})
+
+    @app.get("/api/pairs/by-regime")
+    def pairs_by_regime() -> Any:
+        """Return discovered pairs grouped by regime (spec — Regime Comparison View)."""
+        with discovery_store.lock:
+            result = discovery_store.result
+        if result is None:
+            return jsonify({"ok": False, "error": "No discovery run yet"}), 404
+        pairs_df = result.get("pairs_df")
+        if pairs_df is None or pairs_df.empty:
+            return jsonify({"ok": True, "byRegime": {}})
+        # Merge ranking metadata (score, stability_label) when available so
+        # frontend regime-filtered lists include the same ranking fields as
+        # the global `ranked` endpoint.
+        ranked = result.get("ranked")
+        ranked_map = None
+        if ranked is not None and not getattr(ranked, "empty", True):
+            try:
+                ranked_map = dict((r["pair_id"], {"score": r.get("score"), "stability_label": r.get("stability_label")}) for r in ranked.reset_index(drop=True).to_dict("records"))
+            except Exception:
+                ranked_map = None
+
+        by_regime: dict[str, Any] = {}
+        for regime, grp in pairs_df.groupby("regime"):
+            grp_out = grp.sort_values("coint_pvalue").head(20).reset_index(drop=True)
+            # If we have ranking info, attach it to each row (non-destructive)
+            if ranked_map is not None:
+                try:
+                    rows = []
+                    for _, r in grp_out.iterrows():
+                        pid = r.get("pair_id")
+                        meta = ranked_map.get(pid) if pid is not None else None
+                        row = r.to_dict()
+                        if meta:
+                            row.update(meta)
+                        rows.append(row)
+                    by_regime[str(int(regime))] = _to_jsonable(rows)
+                    continue
+                except Exception:
+                    pass
+            by_regime[str(int(regime))] = _to_jsonable(grp_out)
+        return jsonify({"ok": True, "byRegime": by_regime})
+
+    @app.get("/api/pairs/<path:pair_id>/spread")
+    def pair_spread(pair_id: str) -> Any:
+        """Return spread time series + regime overlay for a single pair (spec — Pair Explorer)."""
+        import pandas as pd
+        with discovery_store.lock:
+            result = discovery_store.result
+        if result is None:
+            return jsonify({"ok": False, "error": "No discovery run yet"}), 404
+
+        pairs_df = result.get("pairs_df")
+        price_matrix = result.get("price_matrix")
+        regime_series = result.get("regime_series")
+
+        if pairs_df is None or price_matrix is None:
+            return jsonify({"ok": False, "error": "Discovery result incomplete"}), 500
+
+        row = pairs_df[pairs_df["pair_id"] == pair_id]
+        if row.empty:
+            return jsonify({"ok": False, "error": f"Pair {pair_id!r} not found"}), 404
+
+        row = row.iloc[0]
+        asset_a = str(row["asset_A"])
+        asset_b = str(row["asset_B"])
+        hedge_ratio = float(row.get("hedge_ratio", 1.0))
+
+        if asset_a not in price_matrix.columns or asset_b not in price_matrix.columns:
+            return jsonify({"ok": False, "error": "Tickers not in price matrix"}), 404
+
+        spread = (price_matrix[asset_a] - hedge_ratio * price_matrix[asset_b]).dropna()
+        spread_mean = float(spread.mean())
+        spread_std = float(spread.std())
+        spread_z = (spread - spread_mean) / spread_std if spread_std > 0 else spread
+
+        spread_data = [
+            {"date": str(idx.date()), "spread": round(float(v), 6), "z": round(float(sz), 4)}
+            for idx, v, sz in zip(spread.index, spread.values, spread_z.values)
+        ]
+
+        regime_data: list = []
+        if regime_series is not None:
+            aligned = regime_series.reindex(spread.index, method="ffill").dropna()
+            regime_data = [
+                {"date": str(idx.date()), "regime": int(v)}
+                for idx, v in aligned.items()
+            ]
+
+        return jsonify({
+            "ok": True,
+            "pair_id": pair_id,
+            "asset_A": asset_a,
+            "asset_B": asset_b,
+            "hedge_ratio": hedge_ratio,
+            "spread_mean": spread_mean,
+            "spread_std": spread_std,
+            "spread": spread_data,
+            "regime": regime_data,
+        })
+
+    @app.get("/api/network")
+    def network_graph() -> Any:
+        """Return nodes/edges for the pair network graph (spec — Network View).
+
+        Optional query param: ``regime=<int>`` filters edges to a single regime.
+        """
+        with discovery_store.lock:
+            result = discovery_store.result
+        if result is None:
+            return jsonify({"ok": False, "error": "No discovery run yet"}), 404
+
+        pairs_df = result.get("pairs_df")
+        if pairs_df is None or pairs_df.empty:
+            return jsonify({"ok": True, "nodes": [], "edges": []})
+
+        regime_param = request.args.get("regime")
+        if regime_param is not None:
+            try:
+                pairs_df = pairs_df[pairs_df["regime"] == int(regime_param)]
+            except (ValueError, TypeError):
+                pass
+
+        tickers = sorted(set(pairs_df["asset_A"].tolist() + pairs_df["asset_B"].tolist()))
+        nodes = [{"id": t, "label": t} for t in tickers]
+
+        agg = (
+            pairs_df.groupby("pair_id")
+            .agg(asset_A=("asset_A", "first"), asset_B=("asset_B", "first"),
+                 best_pvalue=("coint_pvalue", "min"), avg_corr=("corr", "mean"))
+            .reset_index()
+        )
+        edges = [
+            {
+                "source": r["asset_A"],
+                "target": r["asset_B"],
+                "pair_id": r["pair_id"],
+                "weight": round(float(1 - r["best_pvalue"]), 4),
+                "corr": round(float(r["avg_corr"]), 4),
+            }
+            for _, r in agg.iterrows()
+        ]
+        return jsonify({"ok": True, "nodes": nodes, "edges": edges})
 
     return app
 

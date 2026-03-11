@@ -917,3 +917,51 @@ th {
 
   /* end overrides */
 }
+
+/* ── Discovery Section ─────────────────────────────────────────────────────── */
+.discovery-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.discovery-hero-text { flex: 1; min-width: 220px; }
+
+.clickable-row { cursor: pointer; transition: background 0.15s; }
+.clickable-row:hover { background: rgba(99, 230, 190, 0.07); }
+.selected-row { background: rgba(99, 230, 190, 0.12); cursor: pointer; }
+
+.stability-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.stability-high   { background: rgba(81, 207, 102, 0.15); color: #51cf66; border: 1px solid rgba(81,207,102,0.3); }
+.stability-medium { background: rgba(255, 209, 102, 0.15); color: #ffd166; border: 1px solid rgba(255,209,102,0.3); }
+.stability-low    { background: rgba(255, 107, 107, 0.15); color: #ff6b6b; border: 1px solid rgba(255,107,107,0.3); }
+
+.regime-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+.regime-comparison-col {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.regime-comparison-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid transparent;
+  font-size: 0.9rem;
+}

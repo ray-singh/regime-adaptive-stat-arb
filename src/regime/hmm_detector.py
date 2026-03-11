@@ -87,7 +87,7 @@ class HMMRegimeDetector(BaseRegimeDetector):
     def fit_predict_walkforward(
         self,
         df: pd.DataFrame,
-        min_train_years: int = 5,
+        min_train_years: int = 2,
         retrain_every_years: int = 1,
     ) -> pd.Series:
         """Generate look-ahead-free regime labels via walk-forward training (guide §3).

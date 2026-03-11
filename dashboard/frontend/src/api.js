@@ -63,3 +63,42 @@ export async function getHmmInfo() {
   const response = await fetch(`${API_BASE}/api/hmm`);
   return response.json();
 }
+
+// ── Discovery API (spec §4–6) ─────────────────────────────────────────────
+
+export async function runDiscovery(payload = {}) {
+  const response = await fetch(`${API_BASE}/api/discover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return response.json();
+}
+
+export async function getDiscoveryStatus() {
+  const response = await fetch(`${API_BASE}/api/discovery/status`);
+  return response.json();
+}
+
+export async function getRankedPairs() {
+  const response = await fetch(`${API_BASE}/api/pairs/ranked`);
+  return response.json();
+}
+
+export async function getPairsByRegime() {
+  const response = await fetch(`${API_BASE}/api/pairs/by-regime`);
+  return response.json();
+}
+
+export async function getPairSpread(pairId) {
+  const response = await fetch(`${API_BASE}/api/pairs/${encodeURIComponent(pairId)}/spread`);
+  return response.json();
+}
+
+export async function getNetworkGraph(regime) {
+  const url = regime != null
+    ? `${API_BASE}/api/network?regime=${regime}`
+    : `${API_BASE}/api/network`;
+  const response = await fetch(url);
+  return response.json();
+}

@@ -7,32 +7,40 @@ import {
   CartesianGrid,
   Cell,
   ComposedChart,
+  Legend,
   Line,
   LineChart,
   ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   Brush,
   YAxis,
+  ZAxis,
 } from "recharts";
 import {
   getDrawdown,
   getEquity,
   getHealth,
   getHmmInfo,
+  getNetworkGraph,
   getPairs,
+  getPairsByRegime,
+  getPairSpread,
+  getRankedPairs,
   getRegime,
   getRegimePerformance,
   getRollingSharpe,
   getSummary,
   getTradesWithPnL,
   runBacktest,
+  runDiscovery,
+  getDiscoveryStatus,
 } from "./api";
 
-import RiskControls from "./components/RiskControls";
-import { SignalThresholdControls } from "./components/RiskControls";
 import { REGIME_META, DEFAULT_CONTROLS } from "./controls";
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function formatDateLabel(dateString) {
@@ -41,33 +49,7 @@ function formatDateLabel(dateString) {
   return dt.toISOString().slice(0, 10);
 }
 
-function fmt(n, decimals = 2) {
-  return Number(n ?? 0).toFixed(decimals);
-}
-function formatCurrency(n) {
-  if (n == null || Number.isNaN(Number(n))) return "";
-  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function buildLegsSummary(legs = []) {
-  try {
-    return legs.map((l) => `${l.ticker}: ${Number(l.quantity).toFixed(2)} @ ${Number(l.fill_price).toFixed(2)}`).join("; ");
-  } catch (e) {
-    return "";
-  }
-}
-
 // ── Small components ─────────────────────────────────────────────────────────
-function KpiCard({ label, value, hint, accent }) {
-  return (
-    <div className="kpi-card" style={accent ? { borderColor: accent } : {}}>
-      <p className="kpi-label">{label}</p>
-      <p className="kpi-value" style={accent ? { color: accent } : {}}>{value}</p>
-      {hint ? <p className="kpi-hint">{hint}</p> : null}
-    </div>
-  );
-}
-
 function RegimeLegend() {
   return (
     <div className="regime-legend">
@@ -83,220 +65,72 @@ function RegimeLegend() {
 
 
 // ── Annotated timeline ────────────────────────────────────────────────────────
-function AnnotatedTimeline({ regimeBands, drawdown, closedTrades, activeEvt, onEvtChange }) {
-
-  const events = useMemo(() => {
-    const evts = [];
-
-    // Regime transitions
-    for (let i = 1; i < regimeBands.length; i++) {
-      const prev = regimeBands[i - 1];
-      const curr = regimeBands[i];
-      const prevDays = Math.round((new Date(prev.end) - new Date(prev.start)) / 86400000);
-      evts.push({
-        date: curr.start,
-        type: "regime",
-        color: REGIME_META[curr.regime]?.color ?? "#fff",
-        title: `→ ${REGIME_META[curr.regime]?.label ?? `State ${curr.regime}`}`,
-        detail: `Market regime shifted from "${REGIME_META[prev.regime]?.label ?? `State ${prev.regime}`}" (persisted ${prevDays} days) to "${REGIME_META[curr.regime]?.label ?? `State ${curr.regime}`}". The HMM detected a change in return and volatility patterns and updated position sizing rules.`,
-      });
-    }
-
-    // Max drawdown trough
-    if (drawdown.length) {
-      let minIdx = 0;
-      for (let i = 1; i < drawdown.length; i++) {
-        if ((drawdown[i].value ?? 0) < (drawdown[minIdx].value ?? 0)) minIdx = i;
-      }
-      const trough = drawdown[minIdx];
-      if (trough && Number(trough.value) < -5) {
-        evts.push({
-          date: trough.date,
-          type: "drawdown",
-          color: "#ff6b6b",
-          title: `Max DD ${Number(trough.value).toFixed(1)}%`,
-          detail: `The portfolio reached its worst point: ${Math.abs(Number(trough.value)).toFixed(1)}% below its prior peak. This represents the maximum capital at risk at any single moment during the backtest.`,
-        });
-      }
-    }
-
-    // Top 2 wins + top 2 losses from closed round-trips
-    if (closedTrades.length) {
-      const withDates = closedTrades.filter((t) => t.end_date);
-      const wins = withDates.filter((t) => Number(t.realized_pnl) > 0).sort((a, b) => Number(b.realized_pnl) - Number(a.realized_pnl));
-      const losses = withDates.filter((t) => Number(t.realized_pnl) < 0).sort((a, b) => Number(a.realized_pnl) - Number(b.realized_pnl));
-      
-      for (const t of wins.slice(0, 2)) {
-        const hold = t.start_date ? Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) : "?";
-        evts.push({
-          date: t.end_date,
-          type: "win",
-          color: "#51cf66",
-          title: `▲ +$${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
-          detail: `Best trade: pair ${t.pair_id} closed at +$${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })} profit after a ${hold}-day hold. The price spread mean-reverted as expected by the cointegration model.`,
-        });
-      }
-      for (const t of losses.slice(0, 2)) {
-        const hold = t.start_date ? Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) : "?";
-        evts.push({
-          date: t.end_date,
-          type: "loss",
-          color: "#ff8fa3",
-          title: `▼ $${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
-          detail: `Worst trade: pair ${t.pair_id} was stopped out at $${Number(t.realized_pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })} loss after ${hold} days. The spread diverged further instead of converging — the stop-loss protected remaining capital.`,
-        });
-      }
-    }
-
-    return evts.sort((a, b) => new Date(a.date) - new Date(b.date));
-  }, [regimeBands, drawdown, closedTrades]);
-
-  if (!events.length) return null;
-
-  return (
-    <div className="anno-timeline">
-      <div className="anno-timeline-header">
-        <h4 className="anno-title">Key Events</h4>
-        <p className="chart-subtitle" style={{ margin: 0 }}>Hover any marker to read an explanation of what happened at that date.</p>
-      </div>
-      <div className="anno-scroll">
-        {events.map((evt, i) => (
-          <button
-            key={`evt-${i}`}
-            className={`anno-event anno-event-${evt.type}`}
-            style={{ "--evt-color": evt.color }}
-            onMouseEnter={() => onEvtChange(evt)}
-            onMouseLeave={() => onEvtChange(null)}
-            onFocus={() => onEvtChange(evt)}
-            onBlur={() => onEvtChange(null)}
-          >
-            <span className="anno-dot" />
-            <span className="anno-label">{evt.title}</span>
-            <span className="anno-date">{evt.date?.slice(0, 10)}</span>
-          </button>
-        ))}
-      </div>
-      {activeEvt && (
-        <div className="anno-popover" style={{ borderLeftColor: activeEvt.color }}>
-          <div className="anno-popover-header">
-            <strong style={{ color: activeEvt.color }}>{activeEvt.title}</strong>
-            <span className="anno-popover-date">{activeEvt.date?.slice(0, 10)}</span>
-          </div>
-          <p className="anno-popover-text">{activeEvt.detail}</p>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ── Summary slide modal (exportable) ─────────────────────────────────────────
-function SummarySlideModal({ open, onClose, stats, regimeSeries, regimeBands, equity, controls, regimePerf }) {
-  if (!open) return null;
 
-  const firstDate  = equity?.[0]?.date?.slice(0, 10) ?? "—";
-  const lastDate   = equity?.[equity.length - 1]?.date?.slice(0, 10) ?? "—";
-  const cagr       = Number(stats?.cagr_pct ?? 0);
-  const sharpe     = Number(stats?.sharpe_ratio ?? 0);
-  const maxDD      = Number(stats?.max_drawdown_pct ?? 0);
-  const sortino    = Number(stats?.sortino_ratio ?? 0);
-  const finalEq    = Number(stats?.final_equity ?? 0);
-  const initEq     = Number(stats?.initial_capital ?? controls?.initialCapital ?? 1_000_000);
-  const totalRet   = initEq ? ((finalEq - initEq) / initEq * 100) : 0;
-  const regimeCount = (new Set((regimeSeries ?? []).map((r) => r.value))).size;
-  const bestRegime  = regimePerf?.length ? [...regimePerf].sort((a, b) => Number(b.Sharpe) - Number(a.Sharpe))[0] : null;
-  const universeLabel = controls?.universe === "top200" ? "the top 200 US equities" : `the ${controls?.universe} sector`;
 
-  const narrative = [
-    `Over the period ${firstDate} to ${lastDate}, the strategy achieved a CAGR of ${cagr.toFixed(1)}% with a Sharpe ratio of ${sharpe.toFixed(2)}.`,
-    ` The Hidden Markov Model identified ${regimeCount} distinct market regime${regimeCount !== 1 ? "s" : ""}, allowing the strategy to dynamically adapt its entry thresholds and position sizing.`,
-    bestRegime
-      ? ` Best performance occurred in the "${bestRegime.Regime}" regime (Sharpe ${Number(bestRegime.Sharpe ?? 0).toFixed(2)}). The risk manager contained the maximum drawdown to ${Math.abs(maxDD).toFixed(1)}%.`
-      : ` The maximum drawdown of ${Math.abs(maxDD).toFixed(1)}% was contained by the regime-aware risk manager.`,
-    ` The strategy traded up to ${controls?.maxPairs ?? "—"} cointegrated pairs from ${universeLabel}.`,
-  ].join("");
+// ── Network View component (circular layout, SVG-based) ──────────────────────
+function NetworkGraph({ nodes, edges, onSelectPair }) {
+  const W = 700, H = 480, CX = W / 2, CY = H / 2;
+  const R = Math.min(CX, CY) - 60;
+
+  // Place nodes on circle
+  const positions = useMemo(() => {
+    const pos = {};
+    nodes.forEach((n, i) => {
+      const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+      pos[n.id] = { x: CX + R * Math.cos(angle), y: CY + R * Math.sin(angle) };
+    });
+    return pos;
+  }, [nodes, W, H]);
+
+  // Colour edges by weight
+  const maxWeight = useMemo(() => Math.max(...edges.map((e) => e.weight), 0.01), [edges]);
 
   return (
-    <div className="slide-overlay" onClick={onClose}>
-      <div className="slide-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="slide-header">
-          <div>
-            <p className="eyebrow">Quantitative Strategy Report</p>
-            <h2 className="slide-title">Regime-Adaptive Statistical Arbitrage</h2>
-            <p className="slide-period">{firstDate} — {lastDate} · {controls?.universe === "top200" ? "All Sectors" : `${controls?.universe} Sector`}</p>
-          </div>
-          <button className="ghost-button slide-close-btn" onClick={onClose} aria-label="Close">✕</button>
-        </div>
-
-        <div className="slide-kpi-row">
-          {[
-            { label: "Total Return",  value: `${totalRet.toFixed(1)}%`,  color: totalRet >= 0 ? "#51cf66" : "#ff6b6b" },
-            { label: "CAGR",          value: `${cagr.toFixed(1)}%`,      color: cagr >= 0     ? "#51cf66" : "#ff6b6b" },
-            { label: "Sharpe Ratio",  value: sharpe.toFixed(2),          color: sharpe >= 1   ? "#51cf66" : sharpe >= 0 ? "#ffd166" : "#ff6b6b" },
-            { label: "Max Drawdown",  value: `${maxDD.toFixed(1)}%`,     color: "#ff8fa3" },
-            { label: "Sortino Ratio", value: sortino.toFixed(2),         color: sortino >= 1  ? "#51cf66" : "#ffd166" },
-          ].map((k) => (
-            <div key={k.label} className="slide-kpi">
-              <p className="slide-kpi-label">{k.label}</p>
-              <p className="slide-kpi-value" style={{ color: k.color }}>{k.value}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="slide-narrative">
-          <p>{narrative}</p>
-        </div>
-
-        {regimeBands.length > 0 && (
-          <div className="slide-section">
-            <p className="slide-section-label">Market Regime Timeline</p>
-            <div className="regime-strip" style={{ height: 20, borderRadius: 6 }}>
-              {regimeBands.map((band, i) => (
-                <div
-                  key={i}
-                  className="regime-strip-seg"
-                  style={{ background: REGIME_META[band.regime]?.color ?? "#888", flex: 1 }}
-                  title={REGIME_META[band.regime]?.label ?? String(band.regime)}
-                />
-              ))}
-            </div>
-            <div className="regime-legend" style={{ marginTop: 10 }}>
-              {Object.values(REGIME_META).map((m) => (
-                <span key={m.label} className="regime-dot" style={{ "--dot-color": m.color }}>{m.label}</span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {regimePerf?.length > 0 && (
-          <div className="slide-section">
-            <p className="slide-section-label">Performance by Regime</p>
-            <table className="slide-perf-table">
-              <thead>
-                <tr><th>Regime</th><th>Days</th><th>Ann. Return</th><th>Sharpe</th><th>Trades</th></tr>
-              </thead>
-              <tbody>
-                {regimePerf.map((row, i) => (
-                  <tr key={i}>
-                    <td>
-                      <span className="regime-dot-inline" style={{ "--dot-color": Object.values(REGIME_META).find((m) => m.label === row.Regime)?.color ?? "#888" }} />
-                      {row.Regime}
-                    </td>
-                    <td>{row.Days}</td>
-                    <td style={{ color: Number(row["Ann Return %"]) >= 0 ? "#51cf66" : "#ff6b6b" }}>{Number(row["Ann Return %"]).toFixed(1)}%</td>
-                    <td style={{ color: Number(row.Sharpe) >= 0.5 ? "#51cf66" : "#ffd166" }}>{Number(row.Sharpe).toFixed(2)}</td>
-                    <td>{row.Trades}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <div className="slide-footer-row">
-          <p className="slide-disclaimer">For research and educational purposes only. Past performance does not guarantee future results.</p>
-          <button className="run-button slide-print-btn" onClick={() => window.print()}>🖨 Print / Save PDF</button>
-        </div>
-      </div>
+    <div style={{ overflowX: "auto" }}>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ maxWidth: W, display: "block", margin: "0 auto" }}>
+        {edges.map((e, i) => {
+          const s = positions[e.source];
+          const t = positions[e.target];
+          if (!s || !t) return null;
+          const opacity = 0.18 + 0.72 * (e.weight / maxWeight);
+          return (
+            <line
+              key={i}
+              x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+              stroke="#63e6be"
+              strokeOpacity={opacity}
+              strokeWidth={1 + 2.5 * (e.weight / maxWeight)}
+              style={{ cursor: "pointer" }}
+              onClick={() => onSelectPair && onSelectPair(e.pair_id)}
+            >
+              <title>{e.pair_id} · corr {Number(e.corr).toFixed(3)} · weight {Number(e.weight).toFixed(3)}</title>
+            </line>
+          );
+        })}
+        {nodes.map((n) => {
+          const p = positions[n.id];
+          if (!p) return null;
+          const deg = edges.filter((e) => e.source === n.id || e.target === n.id).length;
+          const r = 6 + Math.min(deg * 2, 12);
+          return (
+            <g key={n.id} transform={`translate(${p.x},${p.y})`}>
+              <circle r={r} fill="rgba(99,230,190,0.18)" stroke="#63e6be" strokeWidth={1.5} />
+              <text
+                textAnchor="middle"
+                dy={-r - 4}
+                fontSize={10}
+                fill="#c8dde8"
+                fontWeight={600}
+              >{n.label}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <p className="chart-subtitle" style={{ textAlign: "center", marginTop: 6 }}>
+        Node size = degree (# of pair relationships). Click an edge to open Pair Explorer.
+      </p>
     </div>
   );
 }
@@ -340,10 +174,86 @@ export default function App() {
   const [showSlide,      setShowSlide]      = useState(false);
   const [activeEvt,      setActiveEvt]      = useState(null);
 
+  // ── Discovery state ──────────────────────────────────────────────────────
+  const [discoveryRunning,  setDiscoveryRunning]  = useState(false);
+  const [discoveryError,    setDiscoveryError]    = useState("");
+  const [rankedPairs,       setRankedPairs]       = useState([]);
+  const [pairsByRegime,     setPairsByRegime]     = useState({});
+  const [selectedPair,      setSelectedPair]      = useState(null);
+  const [pairSpread,        setPairSpread]        = useState(null);
+  const [networkData,       setNetworkData]       = useState(null);
+  const [networkRegime,     setNetworkRegime]     = useState("");
+  const [topPairsRegimeFilter, setTopPairsRegimeFilter] = useState("");
+  const [spreadViewMode,       setSpreadViewMode]       = useState("z"); // "z" | "spread"
+
   const applyScenario = (s) => {
     if (!s) { setActiveScenario(null); return; }
     setActiveScenario(s.id);
     setControls((prev) => ({ ...prev, ...s.controls }));
+  };
+
+  // ── Discovery handlers ───────────────────────────────────────────────────
+  const onDiscover = async () => {
+    setDiscoveryRunning(true);
+    setDiscoveryError("");
+    try {
+      // build tickers payload according to selected universe
+      let tickersPayload;
+      if (controls.universe === "top200") tickersPayload = [];
+      else if (controls.universe === "custom") {
+        tickersPayload = (controls.customTickers || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+      } else tickersPayload = undefined;
+
+      const res = await runDiscovery({
+        tickers: tickersPayload,
+        nStates: Number(controls.nStates) || 3,
+      });
+      if (!res.ok) { setDiscoveryError(res.error || "Discovery failed"); setDiscoveryRunning(false); return; }
+      // Poll until done
+      const poll = setInterval(async () => {
+        try {
+          const status = await getDiscoveryStatus();
+          if (!status.running) {
+            clearInterval(poll);
+            setDiscoveryRunning(false);
+            if (status.error) { setDiscoveryError(status.error); return; }
+            if (status.hasResult) await refreshDiscovery();
+          }
+        } catch { clearInterval(poll); setDiscoveryRunning(false); }
+      }, 2000);
+    } catch (exc) {
+      setDiscoveryError(String(exc));
+      setDiscoveryRunning(false);
+    }
+  };
+
+  const refreshDiscovery = async () => {
+    const [rp, pbr, net] = await Promise.all([
+      getRankedPairs().catch(() => ({ ok: false, pairs: [] })),
+      getPairsByRegime().catch(() => ({ ok: false, byRegime: {} })),
+      getNetworkGraph().catch(() => ({ ok: false, nodes: [], edges: [] })),
+    ]);
+    if (rp.ok)  setRankedPairs(rp.pairs || []);
+    if (pbr.ok) setPairsByRegime(pbr.byRegime || {});
+    if (net.ok) setNetworkData({ nodes: net.nodes || [], edges: net.edges || [] });
+  };
+
+  const onSelectPair = async (pairId) => {
+    setSelectedPair(pairId);
+    setPairSpread(null);
+    setSpreadViewMode("z");
+    try {
+      const res = await getPairSpread(pairId);
+      if (res.ok) setPairSpread(res);
+    } catch { /* ignore */ }
+  };
+
+  const onNetworkRegimeChange = async (regime) => {
+    setNetworkRegime(regime);
+    try {
+      const res = await getNetworkGraph(regime !== "" ? regime : undefined);
+      if (res.ok) setNetworkData({ nodes: res.nodes || [], edges: res.edges || [] });
+    } catch { /* ignore */ }
   };
 
   const refreshData = async () => {
@@ -453,6 +363,22 @@ export default function App() {
     [equity, regimeSeries],
   );
 
+  // Which pairs to show in Top Pairs Panel (optionally filter by regime)
+  const displayedPairs = useMemo(() => {
+    if (!topPairsRegimeFilter) return rankedPairs || [];
+    const arr = pairsByRegime?.[topPairsRegimeFilter] || [];
+    return arr.map((p, i) => ({
+      pair_id: p.pair_id,
+      rank: i + 1,
+      score: p.score ?? 0,
+      stability_label: p.stability_label ?? "—",
+      regime_sensitive: !!p.regime_sensitive,
+      best_half_life_days: p.half_life_days ?? p.best_half_life_days,
+      best_coint_pvalue: p.coint_pvalue ?? p.best_coint_pvalue,
+      n_regimes_active: p.n_regimes_active ?? 1,
+    }));
+  }, [rankedPairs, pairsByRegime, topPairsRegimeFilter]);
+
   // Color-stop stripes behind equity curve (rendered as SVG linear gradient segments)
   // We mark regime changes so they can be rendered as reference areas.
   const regimeBands = useMemo(() => {
@@ -524,718 +450,445 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      {/* ── Hero ── */}
-      <section className="hero-panel">
-        <div>
-          <p className="eyebrow">Regime-Adaptive Statistical Arbitrage</p>
-          <h1>Trading Intelligence Dashboard</h1>
+      {/* ═══════════════════════════════════════════════════════════════════
+          PAIR RELATIONSHIP DISCOVERY  (spec §4–6)
+          ═══════════════════════════════════════════════════════════════════ */}
+      <section className="card discovery-hero">
+        <div className="discovery-hero-text">
+          <p className="eyebrow">Pair Relationship Discovery</p>
+          <h2>Regime-Aware Pair Browser</h2>
           <p className="subtitle">
-            Regime-aware backtest analytics — run strategies, inspect risk, monitor pair re-selection, and diagnose behaviour by market regime.
+            Discover cointegrated asset pairs, analyse how relationships shift across market regimes,
+            and explore the most statistically interesting pairs.
           </p>
         </div>
         <div className="hero-actions">
-          <button className="run-button" onClick={onRun} disabled={running}>
-            {running ? "Running Backtest…" : "▶ Run Backtest"}
-          </button>
-          <button className="ghost-button" onClick={() => setShowSlide(true)} disabled={!summary}>📊 Export</button>
-          <button className="ghost-button" onClick={refreshData}>⟳ Refresh</button>
-        </div>
-      </section>
-
-      {/* ── Controls ── */}
-      <section className="control-grid">
-        <h2>Strategy Controls</h2>
-        <div className="controls">
-          <label>Initial Capital
-            <input type="number" value={controls.initialCapital} onChange={(e) => setControls({ ...controls, initialCapital: e.target.value })} />
-          </label>
-          <label>Train %
-            <input type="number" step="0.01" min="0.2" max="0.9" value={controls.trainPct} onChange={(e) => setControls({ ...controls, trainPct: e.target.value })} />
-          </label>
-          <label>Max Pairs
-            <input type="number" min="1" max="30" value={controls.maxPairs} onChange={(e) => setControls({ ...controls, maxPairs: e.target.value })} />
-          </label>
-          <label>Re-selection Interval (days)
-            <input type="number" min="21" max="252" value={controls.reselectionInterval} onChange={(e) => setControls({ ...controls, reselectionInterval: e.target.value })} />
-          </label>
-          <label>Entry Z (baseline)
-            <input type="number" step="0.1" value={controls.entryZ} onChange={(e) => setControls({ ...controls, entryZ: e.target.value })} />
-          </label>
-          <label>Exit Z (baseline)
-            <input type="number" step="0.1" value={controls.exitZ} onChange={(e) => setControls({ ...controls, exitZ: e.target.value })} />
-          </label>
-          <label>Stop Z
-            <input type="number" step="0.1" value={controls.stopZ} onChange={(e) => setControls({ ...controls, stopZ: e.target.value })} />
-          </label>
-          <label>HMM States (n)
-            <input type="number" min="2" max="4" value={controls.nStates} onChange={(e) => setControls({ ...controls, nStates: e.target.value })} />
-          </label>
-          <label>Universe
-            <select value={controls.universe} onChange={(e) => setControls({ ...controls, universe: e.target.value })}>
-              <option value="top200">Top 200 (All)</option>
-              <option value="Technology">Technology</option>
-              <option value="Financials">Financials</option>
-              <option value="Healthcare">Healthcare</option>
-              <option value="Consumer">Consumer</option>
-              <option value="Energy">Energy</option>
-              <option value="Industrials">Industrials</option>
-            </select>
-          </label>
-          {controls.universe === "top200" && (
-            <div className="warning-text">⚠ Running on the full universe may be slow. Expect longer backtest times.</div>
-          )}
-          <label className="toggle-row">
-            <input type="checkbox" checked={controls.useRisk} onChange={(e) => setControls({ ...controls, useRisk: e.target.checked })} />
-            Enable Risk Manager
-          </label>
-          <label className="toggle-row">
-            <input type="checkbox" checked={controls.useMacroTickers} onChange={(e) => setControls({ ...controls, useMacroTickers: e.target.checked })} />
-            Use Macro Tickers (VIX, GLD, TLT, USO)
-          </label>
-          <label className="toggle-row">
-            <input type="checkbox" checked={controls.reselectionEnabled} onChange={(e) => setControls({ ...controls, reselectionEnabled: e.target.checked })} />
-            Enable Pair Re-selection
-          </label>
-        </div>
-        {controls.useRisk && (
-          <RiskControls controls={controls} setControls={setControls} setError={setError} />
-        )}
-        <SignalThresholdControls controls={controls} setControls={setControls} />
-        {error ? <p className="error-text">⚠ {error}</p> : null}
-      </section>
-
-      {/* ── KPIs ── */}
-      <section className="kpi-grid">
-        <KpiCard label="Final Equity"    value={`$${Number(stats.final_equity || 0).toLocaleString()}`}        hint="Portfolio end value" />
-        <KpiCard label="CAGR"            value={`${fmt(stats.cagr_pct)}%`}                                      hint="Annualized growth" accent={Number(stats.cagr_pct) >= 0 ? "#51cf66" : "#ff6b6b"} />
-        <KpiCard label="Sharpe"          value={fmt(stats.sharpe_ratio, 3)}                                     hint="Risk-adjusted return" accent={Number(stats.sharpe_ratio) >= 1 ? "#51cf66" : Number(stats.sharpe_ratio) >= 0 ? "#ffd166" : "#ff6b6b"} />
-        <KpiCard label="Max Drawdown"    value={`${fmt(stats.max_drawdown_pct)}%`}                              hint="Worst peak-to-trough" accent="#ff8fa3" />
-        <KpiCard label="Ann. Volatility" value={`${fmt(stats.ann_vol_pct)}%`}                                   hint="Daily vol × √252" />
-        <KpiCard label="Sortino"         value={fmt(stats.sortino_ratio, 3)}                                    hint="Downside-only risk" />
-        <KpiCard label="Risk Rejections" value={String(risk.orders_rejected ?? 0)}                              hint={`Rate ${fmt(risk.rejection_rate_pct)}%`} />
-        <KpiCard label="Pair Re-selections" value={String(summary?.pairReselections ?? 0)}                      hint="Dynamic universe updates" />
-      </section>
-
-      {/* ── Equity curve with regime timeline (spec §4.1) ── */}
-      <section className="card chart-card full-width">
-        <div className="chart-header">
-          <div>
-            <h3>Equity Curve &amp; Regime Timeline</h3>
-            <p className="chart-subtitle">Colored bands show detected market regime. Use the brush below to zoom into any period.</p>
-          </div>
-          <RegimeLegend />
-        </div>
-        <ResponsiveContainer width="100%" height={320}>
-          <ComposedChart data={equityRegimeData} margin={{ top: 8, right: 20, bottom: 0, left: 0 }}>
-            <defs>
-              <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#ffb900" stopOpacity={0.22} />
-                <stop offset="95%" stopColor="#ffb900" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" />
-            <XAxis
-              dataKey="date"
-              tickFormatter={formatDateLabel}
-              tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }}
-              tickLine={false}
-              axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
-            />
-            <YAxis
-              tickFormatter={(v) => `$${(v / 1_000_000).toFixed(2)}M`}
-              width={76}
-              tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }}
-              tickLine={false}
-              axisLine={false}
-            />
-            <Tooltip
-              contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,185,0,0.18)", borderRadius: 10, fontSize: 13 }}
-              labelFormatter={(d) => <span style={{ color: "#ffb900", fontWeight: 700 }}>{formatDateLabel(d)}</span>}
-              formatter={(value, name) => {
-                if (name === "equity") return [`$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, "Portfolio Value"];
-                return [value, name];
-              }}
-            />
-            {/* Regime colored background bands */}
-            {regimeBands.map((band, i) => (
-              <ReferenceArea
-                key={i}
-                x1={band.start}
-                x2={band.end}
-                fill={REGIME_META[band.regime]?.bg ?? "transparent"}
-                ifOverflow="hidden"
-                label={i === 0 || band.regime !== regimeBands[i - 1]?.regime ? undefined : undefined}
-              />
-            ))}
-            {/* Initial capital baseline */}
-            {stats.initial_capital ? (
-              <ReferenceLine
-                y={Number(stats.initial_capital)}
-                stroke="rgba(255,255,255,0.25)"
-                strokeDasharray="5 4"
-                label={{ value: "Initial capital", position: "insideTopLeft", fontSize: 11, fill: "rgba(255,255,255,0.35)" }}
-              />
-            ) : null}
-            <Area
-              type="monotone"
-              dataKey="equity"
-              stroke="#ffb900"
-              strokeWidth={2.5}
-              fill="url(#equityGrad)"
-              dot={false}
-              activeDot={{ r: 5, stroke: "#ffb900", strokeWidth: 2, fill: "#071017" }}
-              isAnimationActive={false}
-            />
-            <Brush
-              dataKey="date"
-              height={28}
-              fill="rgba(14,27,42,0.8)"
-              stroke="rgba(99,230,190,0.35)"
-              travellerWidth={8}
-              tickFormatter={formatDateLabel}
-              onChange={(range) => {
-                try {
-                  if (!range) return;
-                  const startIndex = range.startIndex ?? range.startIndex === 0 ? range.startIndex : null;
-                  const endIndex = range.endIndex ?? range.endIndex === 0 ? range.endIndex : null;
-                  if (startIndex == null || endIndex == null) return;
-                  const start = equityRegimeData[startIndex]?.date ?? null;
-                  const end = equityRegimeData[endIndex]?.date ?? null;
-                  setChartRange({ start, end });
-                } catch (e) { /* ignore */ }
-              }}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
-        {chartRange.start && chartRange.end ? (
-          <div className="chart-range">Selection: <strong>{formatDateLabel(chartRange.start)}</strong> — <strong>{formatDateLabel(chartRange.end)}</strong></div>
-        ) : null}
-        {/* Regime colour strip */}
-        {regimeBands.length > 0 && (
-          <div className="regime-strip" aria-label="Regime band strip">
-            {regimeBands.map((band, i) => (
-              <div
-                key={i}
-                className="regime-strip-seg"
-                style={{ background: REGIME_META[band.regime]?.color ?? "#888", flex: 1 }}
-                title={`${REGIME_META[band.regime]?.label ?? band.regime}: ${formatDateLabel(band.start)} – ${formatDateLabel(band.end)}`}
-              />
-            ))}
-          </div>
-        )}
-        <AnnotatedTimeline regimeBands={regimeBands} drawdown={drawdown} closedTrades={closedTrades} activeEvt={activeEvt} onEvtChange={setActiveEvt} />
-      </section>
-
-      {/* ── Drawdown + Rolling Sharpe ── */}
-      <section className="chart-grid">
-        <article className="card chart-card">
-          <div className="chart-header">
-            <div>
-              <h3>Drawdown from Peak</h3>
-              <p className="chart-subtitle">How far the portfolio has fallen from its all-time high at each point in time.</p>
-            </div>
-            {stats.max_drawdown_pct != null && (
-              <span className="stat-badge danger">Max {fmt(stats.max_drawdown_pct)}%</span>
-            )}
-          </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={drawdown} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#ff8fa3" stopOpacity={0.45} />
-                  <stop offset="100%" stopColor="#ff8fa3" stopOpacity={0.06} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" />
-              <XAxis
-                dataKey="date"
-                tickFormatter={formatDateLabel}
-                tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }}
-                tickLine={false}
-                axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
-              />
-              <YAxis
-                domain={["dataMin", 0]}
-                tickFormatter={(v) => `${v.toFixed(0)}%`}
-                width={44}
-                tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }}
-                tickLine={false}
-                axisLine={false}
-              />
-              {stats.max_drawdown_pct != null && (
-                <ReferenceLine
-                  y={Number(stats.max_drawdown_pct)}
-                  stroke="rgba(255,107,107,0.6)"
-                  strokeDasharray="5 3"
-                  label={{ value: `Max DD ${fmt(stats.max_drawdown_pct)}%`, position: "insideBottomRight", fontSize: 11, fill: "rgba(255,107,107,0.8)" }}
-                />
-              )}
-              {activeEvt?.date && (
-                <ReferenceLine
-                  x={activeEvt.date}
-                  stroke={activeEvt.color}
-                  strokeDasharray="3 3"
-                  strokeWidth={2}
-                  label={{ value: formatDateLabel(activeEvt.date), position: "top", fontSize: 11, fill: activeEvt.color, offset: 8 }}
-                />
-              )}
-              <Tooltip
-                contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,185,0,0.12)", borderRadius: 10, fontSize: 13 }}
-                labelFormatter={(d) => <span style={{ color: "#ff8fa3", fontWeight: 700 }}>{formatDateLabel(d)}</span>}
-                formatter={(v) => [`${Number(v).toFixed(2)}%`, "Drawdown"]}
-              />
-              <Area type="monotone" dataKey="value" stroke="#ff8fa3" strokeWidth={1.8} fill="url(#ddGrad)" dot={false} isAnimationActive={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </article>
-
-        <article className="card chart-card">
-          <div className="chart-header">
-            <div>
-              <h3>Rolling 60-Day Sharpe</h3>
-              <p className="chart-subtitle">Green = positive risk-adjusted alpha. Red = strategy underperforming risk-free rate on this window.</p>
-            </div>
-            {stats.sharpe_ratio != null && (
-              <span className={`stat-badge ${Number(stats.sharpe_ratio) >= 1 ? "success" : Number(stats.sharpe_ratio) >= 0 ? "warn" : "danger"}`}>
-                Overall {fmt(stats.sharpe_ratio, 2)}
-              </span>
-            )}
-          </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <ComposedChart data={rollingSharpe} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="sharpeGradPos" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#51cf66" stopOpacity={0.28} />
-                  <stop offset="100%" stopColor="#51cf66" stopOpacity={0.02} />
-                </linearGradient>
-                <linearGradient id="sharpeGradNeg" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.02} />
-                  <stop offset="100%" stopColor="#ff6b6b" stopOpacity={0.28} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" />
-              <XAxis
-                dataKey="date"
-                tickFormatter={formatDateLabel}
-                tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }}
-                tickLine={false}
-                axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
-              />
-              <YAxis
-                width={40}
-                tick={{ fontSize: 11, fill: "#9ab8cc" }}
-                tickLine={false}
-                axisLine={false}
-              />
-              <ReferenceLine y={0} stroke="rgba(255,255,255,0.14)" strokeDasharray="3 3" label={{ value: "0", position: "insideTopLeft", fontSize: 10, fill: "rgba(255,255,255,0.5)" }} />
-              <ReferenceLine y={1} stroke="rgba(81,207,102,0.22)" strokeDasharray="3 3" label={{ value: "1.0 target", position: "insideTopLeft", fontSize: 10, fill: "rgba(81,207,102,0.45)" }} />
-              {activeEvt?.date && (
-                <ReferenceLine
-                  x={activeEvt.date}
-                  stroke={activeEvt.color}
-                  strokeDasharray="3 3"
-                  strokeWidth={2}
-                  label={{ value: formatDateLabel(activeEvt.date), position: "top", fontSize: 11, fill: activeEvt.color, offset: 8 }}
-                />
-              )}
-              <Tooltip
-                contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,185,0,0.12)", borderRadius: 10, fontSize: 13 }}
-                labelFormatter={(d) => <span style={{ color: "#ffd166", fontWeight: 700 }}>{formatDateLabel(d)}</span>}
-                formatter={(v) => {
-                  const n = Number(v);
-                  return [<span style={{ color: n >= 0 ? "#51cf66" : "#ff6b6b" }}>{n.toFixed(2)}</span>, "Sharpe (60d)"];
-                }}
-              />
-              <Area type="monotone" dataKey="value" stroke="none" fill="url(#sharpeGradPos)" dot={false} isAnimationActive={false} baseLine={0} />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#ffd166"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 5, stroke: "#ffd166", strokeWidth: 2, fill: "#0e1b2a" }}
-                isAnimationActive={false}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </article>
-      </section>
-
-      {/* ── Regime Performance Analysis (spec §4.4) ── */}
-      {regimePerf.length > 0 && (
-        <section className="card regime-perf-section">
-          <h3>Regime Performance Analysis</h3>
-          <div className="regime-perf-grid">
-            {/* Table */}
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Regime</th>
-                    <th>Days</th>
-                    <th>Ann Return %</th>
-                    <th>Sharpe</th>
-                    <th>Ann Vol %</th>
-                    <th>Trades</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {regimePerf.map((row, idx) => {
-                    const sharpe = Number(row.Sharpe ?? 0);
-                    const ret    = Number(row["Ann Return %"] ?? 0);
-                    const color  = sharpe >= 0.5 ? "#51cf66" : sharpe >= 0 ? "#ffd166" : "#ff6b6b";
-                    return (
-                      <tr key={idx}>
-                        <td>
-                          <span className="regime-dot-inline" style={{ "--dot-color": Object.values(REGIME_META).find((m) => m.label === row.Regime)?.color ?? "#888" }} />
-                          {row.Regime}
-                        </td>
-                        <td>{row.Days}</td>
-                        <td style={{ color: ret >= 0 ? "#51cf66" : "#ff6b6b" }}>{fmt(ret)}%</td>
-                        <td style={{ color }}>{fmt(sharpe, 2)}</td>
-                        <td>{fmt(row["Ann Vol %"])}%</td>
-                        <td>{row.Trades}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {/* Sharpe bar chart per regime */}
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart
-                data={regimePerf}
-                layout="vertical"
-                margin={{ top: 4, right: 24, bottom: 0, left: 4 }}
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              Universe:
+              <select
+                value={controls.universe}
+                onChange={(e) => setControls((c) => ({ ...c, universe: e.target.value }))}
+                style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, color: "#e0eaf0", padding: "4px 8px" }}
               >
-                <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-                <XAxis type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }} />
-                <YAxis type="category" dataKey="Regime" width={120} tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }} />
-                <ReferenceLine x={0} stroke="rgba(255,255,255,0.4)" />
-                <Tooltip formatter={(v) => [Number(v).toFixed(2), "Sharpe"]} />
-                <Bar dataKey="Sharpe" radius={[0, 4, 4, 0]}>
-                  {regimePerf.map((row, idx) => (
-                    <Cell
-                      key={idx}
-                      fill={Number(row.Sharpe) >= 0 ? "#51cf66" : "#ff6b6b"}
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+                <option value="top200">Top 200 US equities</option>
+                <option value="custom">Custom tickers</option>
+              </select>
+            </label>
+            {controls.universe === "custom" && (
+              <input
+                placeholder="Comma-separated tickers (e.g. AAPL,MSFT,GOOG)"
+                value={controls.customTickers || ""}
+                onChange={(e) => setControls((c) => ({ ...c, customTickers: e.target.value }))}
+                style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", color: "#e0eaf0", padding: "6px 8px", borderRadius: 6, minWidth: 280 }}
+              />
+            )}
+            <button className="run-button" onClick={onDiscover} disabled={discoveryRunning}>
+              {discoveryRunning ? "Discovering…" : "▶ Run Discovery"}
+            </button>
           </div>
-        </section>
-      )}
+          {rankedPairs.length > 0 && (
+            <button className="ghost-button" onClick={refreshDiscovery}>⟳ Refresh</button>
+          )}
+        </div>
+        {discoveryError && <p className="error-text" style={{ marginTop: 10 }}>⚠ {discoveryError}</p>}
+        {discoveryRunning && (
+          <p className="chart-subtitle" style={{ marginTop: 8, color: "#ffd166" }}>
+            Running pipeline: fetching prices → features → regime detection → pair discovery…
+          </p>
+        )}
+      </section>
 
-      {/* ── HMM Diagnostics ── */}
-      {hmmDiagnostics && (
-        <section className="card full-width hmm-section">
-          <div className="chart-header" style={{ marginBottom: 16 }}>
-            <div>
-              <h3>HMM Regime Diagnostics</h3>
-              <p className="chart-subtitle">Walk-forward trained Gaussian HMM with {controls.nStates} states. States ordered by ascending realised volatility (State 0 = low-vol/bull, State {controls.nStates - 1} = high-vol/bear).</p>
-            </div>
-          </div>
-
-          <div className="hmm-grid">
-            <div className="hmm-left-col">
-              {/* Left: model or empirical transition matrix */}
-              <div className="hmm-panel">
-                <h4 className="hmm-panel-title">
-                  Transition Matrix
-                  <span className="hmm-source-badge">{hmmInfo?.transition_matrix ? "model" : "empirical"}</span>
-                </h4>
-                <p className="chart-subtitle" style={{ marginTop: 0 }}>Rows = from state · Cols = to state · Values = probability per bar. Diagonal shows regime persistence.</p>
-                {/* Use model matrix from /api/hmm if available, else fall back to empirical */}
-                {(() => {
-                  const modelMat = hmmInfo?.transition_matrix;
-                  const states = hmmDiagnostics.states;
-                  const mat = modelMat
-                    ? modelMat
-                    : hmmDiagnostics.probs;
-                  return (
-                    <div style={{ overflowX: "auto" }}>
-                      <table className="matrix-table">
-                        <thead>
-                          <tr>
-                            <th style={{ width: 110 }}>From \ To</th>
-                            {states.map((s) => (
-                              <th key={`hcol-${s}`} style={{ textAlign: "center" }}>
-                                <span className="state-chip" style={{ "--chip": REGIME_META[s]?.color ?? "#888" }}>
-                                  {REGIME_META[s]?.label ?? `State ${s}`}
-                                </span>
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {mat.map((row, i) => (
-                            <tr key={`hrow-${i}`}>
-                              <td>
-                                <span className="state-chip" style={{ "--chip": REGIME_META[states[i]]?.color ?? "#888" }}>
-                                  {REGIME_META[states[i]]?.label ?? `State ${states[i]}`}
-                                </span>
-                              </td>
-                              {row.map((p, j) => {
-                                const isDiag = i === j;
-                                const alpha = Math.min(0.92, p * 1.1 + 0.04);
-                                return (
-                                  <td
-                                    key={`cell-${i}-${j}`}
-                                    className={isDiag ? "matrix-diag" : ""}
-                                    style={{ background: `rgba(99,230,190,${isDiag ? alpha : alpha * 0.4})`, textAlign: "center", fontWeight: isDiag ? 600 : 400 }}
-                                  >
-                                    {Number(p).toFixed(3)}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              {/* Centre (moved below matrix): state durations */}
-              <div className="hmm-panel" style={{ marginTop: 12 }}>
-                <h4 className="hmm-panel-title">Avg State Duration <span className="hmm-source-badge">days</span></h4>
-                <p className="chart-subtitle" style={{ marginTop: 0 }}>How many consecutive bars the model tends to stay in each regime before switching.</p>
-                <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={hmmDiagnostics.durationBars} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
-                    <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }} tickLine={false} axisLine={false} />
-                    <YAxis
-                      type="category"
-                      dataKey="state"
-                      width={115}
-                      tick={{ fontSize: 11, fill: "#9ab8cc" }}
-                      tickLine={false}
-                      axisLine={false}
-                      tickFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
-                    />
-                    <Tooltip
-                      contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,209,102,0.3)", borderRadius: 10, fontSize: 13, color: "#ffffff" }}
-                      formatter={(v) => [<span style={{ color: "#ffffff" }}>{`${v} days`}</span>, <span style={{ color: "#ffffff" }}>Avg duration</span>]}
-                      labelFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
-                    />
-                    <Bar dataKey="value" radius={[0, 6, 6, 0]} isAnimationActive={false}>
-                      {hmmDiagnostics.durationBars.map((d, i) => (
-                        <Cell key={i} fill={REGIME_META[d.state]?.color ?? "#ffd166"} />
+      {/* ── Top Pairs Panel (spec §6 — Pair Ranking) ─────────────────────── */}
+      {rankedPairs.length > 0 && (
+        <section className="card table-card full-width">
+              <div className="chart-header">
+                <div>
+                  <h3>Top Pairs Panel</h3>
+                  <p className="chart-subtitle">
+                    Pairs ranked by regime sensitivity and mean-reversion strength. Click a row to explore the spread.
+                  </p>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    Regime:
+                    <select
+                      value={topPairsRegimeFilter}
+                      onChange={(e) => setTopPairsRegimeFilter(e.target.value)}
+                      style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 6, color: "#e0eaf0", padding: "4px 8px" }}
+                    >
+                      <option value="">All</option>
+                      {Object.keys(REGIME_META).sort((a,b) => Number(a) - Number(b)).map((r) => (
+                        <option key={r} value={r}>{`${REGIME_META[Number(r)]?.label ?? `Regime ${r}`} (${(pairsByRegime?.[r]?.length) ?? 0})`}</option>
                       ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-
-                {/* Walk-forward bar counts from model */}
-                {hmmInfo?.walkforward_counts && (
-                  <>
-                    <h4 className="hmm-panel-title" style={{ marginTop: 14 }}>Walk-forward Label Distribution</h4>
-                    <p className="chart-subtitle" style={{ marginTop: 0 }}>Bars assigned to each regime across the full walk-forward training period.</p>
-                    <ResponsiveContainer width="100%" height={130}>
-                      <BarChart
-                        layout="vertical"
-                        data={Object.entries(hmmInfo.walkforward_counts).map(([k, v]) => ({ state: Number(k), count: v }))}
-                        margin={{ top: 4, right: 24, bottom: 4, left: 4 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" horizontal={false} />
-                        <XAxis type="number" tick={{ fontSize: 11, fill: "#9ab8cc" }} tickLine={false} axisLine={false} />
-                        <YAxis
-                          type="category"
-                          dataKey="state"
-                          width={115}
-                          tick={{ fontSize: 11, fill: "#9ab8cc" }}
-                          tickLine={false}
-                          axisLine={false}
-                          tickFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
-                        />
-                        <Tooltip
-                          contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.3)", borderRadius: 10, fontSize: 13 }}
-                          formatter={(v) => [<strong style={{ color: "#ffffff" }}>{v} bars</strong>, <span style={{ color: "#ffffff" }}>Total days</span>]}
-                          labelFormatter={(s) => REGIME_META[s]?.label ?? `State ${s}`}
-                        />
-                        <Bar dataKey="count" radius={[0, 6, 6, 0]} isAnimationActive={false}>
-                          {Object.keys(hmmInfo.walkforward_counts).map((k, i) => (
-                            <Cell key={i} fill={REGIME_META[Number(k)]?.color ?? "#63e6be"} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </>
-                )}
+                    </select>
+                  </label>
+                  <span className="stat-badge">{(displayedPairs || []).length} pairs</span>
+                </div>
               </div>
-            </div>
-
-            {/* Right: emission means per state feature */}
-            <div className="hmm-panel">
-              <h4 className="hmm-panel-title">State Emission Profiles <span className="hmm-source-badge">model means</span></h4>
-              <p className="chart-subtitle" style={{ marginTop: 0 }}>Scaled feature means for each state. Positive logret + low rv_20 = bull; negative logret + high rv_20 = bear.</p>
-              {hmmInfo?.emission_means && hmmInfo?.feature_cols ? (
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart
-                    data={hmmInfo.feature_cols.map((feat, fi) => {
-                      const row = { feature: feat };
-                      hmmInfo.emission_means.forEach((means, si) => {
-                        row[`state_${si}`] = Number(means[fi]?.toFixed(4) ?? 0);
-                      });
-                      return row;
-                    })}
-                    margin={{ top: 4, right: 8, bottom: 8, left: 0 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
-                    <XAxis
-                      dataKey="feature"
-                      tick={{ fontSize: 11, fill: "#9ab8cc" }}
-                      tickLine={false}
-                      axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
-                    />
-                    <YAxis
-                      tick={{ fontSize: 11, fill: "#9ab8cc" }}
-                      tickLine={false}
-                      axisLine={false}
-                      width={44}
-                    />
-                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.3)" strokeDasharray="4 3" />
-                    <Tooltip
-                      contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, fontSize: 13 }}
-                      formatter={(v, name) => {
-                        const si = Number(name.replace("state_", ""));
-                        return [Number(v).toFixed(4), REGIME_META[si]?.label ?? name];
-                      }}
-                    />
-                    {hmmInfo.emission_means.map((_, si) => (
-                      <Bar key={si} dataKey={`state_${si}`} name={`state_${si}`} fill={REGIME_META[si]?.color ?? "#888"} radius={[4, 4, 0, 0]} isAnimationActive={false} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <p style={{ color: "#9ab8cc", fontSize: "0.82rem" }}>Run a backtest to populate HMM model internals.</p>
-              )}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* ── Pairs + Trades tables ── */}
-      <section className="tables-grid">
-        <article className="card table-card">
-          <h3>Selected Pairs</h3>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
+                  <th>#</th>
                   <th>Pair</th>
-                  <th>P-Value</th>
-                  <th>Hedge Ratio</th>
-                  <th>Half-Life (d)</th>
+                  <th>Score</th>
+                  <th>Stability</th>
+                  <th>Regime Sensitive</th>
+                  <th>Best Half-Life (d)</th>
+                  <th>Best p-value</th>
+                  <th>Active Regimes</th>
                 </tr>
               </thead>
               <tbody>
-                {pairs.slice(0, 20).map((row, idx) => (
-                  <tr key={`${row.ticker1}-${row.ticker2}-${idx}`}>
-                    <td><strong>{row.ticker1}/{row.ticker2}</strong></td>
-                    <td>{fmt(row.pvalue, 4)}</td>
-                    <td>{fmt(row.hedge_ratio, 3)}</td>
-                    <td>{fmt(row.half_life_days, 1)}</td>
+                {displayedPairs.slice(0, 30).map((p, i) => (
+                  <tr
+                    key={p.pair_id}
+                    onClick={() => onSelectPair(p.pair_id)}
+                    className={selectedPair === p.pair_id ? "selected-row" : "clickable-row"}
+                    title="Click to open Pair Explorer"
+                  >
+                    <td>{p.rank ?? i + 1}</td>
+                    <td><strong>{p.pair_id}</strong></td>
+                    <td style={{ color: "#ffd166" }}>{Number(p.score ?? 0).toFixed(3)}</td>
+                    <td>
+                      <span className={`stability-badge stability-${p.stability_label}`}>
+                        {p.stability_label ?? "—"}
+                      </span>
+                    </td>
+                    <td style={{ color: p.regime_sensitive ? "#ff8fa3" : "#51cf66" }}>
+                      {p.regime_sensitive ? "Yes" : "No"}
+                    </td>
+                    <td>{p.best_half_life_days != null ? Number(p.best_half_life_days).toFixed(1) : "—"}</td>
+                    <td style={{ color: Number(p.best_coint_pvalue) < 0.01 ? "#51cf66" : "#ffd166" }}>
+                      {p.best_coint_pvalue != null ? Number(p.best_coint_pvalue).toExponential(2) : "—"}
+                    </td>
+                    <td>{p.n_regimes_active ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </article>
+        </section>
+      )}
 
-        <article className="card table-card">
-          <h3>Recent Trades</h3>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Pair</th>
-                  <th>Ticker</th>
-                  <th>Qty</th>
-                  <th>Price</th>
-                  <th>Commission</th>
-                  <th>Round PnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                  {trades.slice(-30).reverse().map((row, idx) => {
-                    // find closed trade PnL if available
-                    const rt = row.roundtrip_id;
-                    const closed = rt != null ? closedTradesById.get(rt) : null;
-                    return (
-                      <tr key={`${row.date}-${row.ticker}-${idx}`}>
-                        <td>{formatDateLabel(row.date)}</td>
-                        <td>{row.pair_id}</td>
-                        <td>{row.ticker}</td>
-                        <td style={{ color: Number(row.quantity) > 0 ? "#51cf66" : "#ff8fa3" }}>
-                          {fmt(row.quantity, 2)}
-                        </td>
-                        <td>{fmt(row.fill_price, 2)}</td>
-                        <td>{fmt(row.commission, 2)}</td>
-                        <td
-                          style={{ color: closed && closed.realized_pnl >= 0 ? "#51cf66" : "#ff6b6b" }}
-                          title={closed ? `Round-trip PnL: ${formatCurrency(closed.realized_pnl)}\nStart: ${formatDateLabel(closed.start_date)}\nEnd: ${formatDateLabel(closed.end_date)}\nLegs: ${buildLegsSummary(closed.legs)}` : ""}
-                        >
-                          {closed ? formatCurrency(closed.realized_pnl) : ""}
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
+      {/* ── Pair Analytics: Score Bar Chart + Half-Life Scatter ─────────── */}
+      {rankedPairs.length > 2 && (
+        <section className="card full-width" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32, alignItems: "start" }}>
+          {/* Score bar chart */}
+          <div>
+            <div className="chart-header" style={{ marginBottom: 12 }}>
+              <div>
+                <h3>Pair Scores</h3>
+                <p className="chart-subtitle">Click a bar to open its spread. Colour = stability.</p>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(180, Math.min(displayedPairs.length, 18) * 26)}>
+              <BarChart
+                data={[...displayedPairs].slice(0, 18).reverse().map((p) => ({ ...p, displayScore: Number(p.score ?? 0) }))}
+                layout="vertical"
+                margin={{ top: 0, right: 36, bottom: 0, left: 82 }}
+                onClick={(d) => d?.activePayload?.[0] && onSelectPair(d.activePayload[0].payload.pair_id)}
+              >
+                <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+                <XAxis type="number" domain={[0, 1]} tick={{ fontSize: 11, fill: "#98a6b3" }} tickLine={false} tickFormatter={(v) => v.toFixed(2)} />
+                <YAxis type="category" dataKey="pair_id" tick={{ fontSize: 11, fill: "#c8dde8" }} tickLine={false} width={80} />
+                <Tooltip
+                  contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.18)", borderRadius: 10, fontSize: 12 }}
+                  formatter={(v, _name, props) => {
+                    const stab = props.payload?.stability_label;
+                    const col = stab === "high" ? "#51cf66" : stab === "medium" ? "#ffd166" : "#ff8fa3";
+                    return [
+                      <span key="sv"><span style={{ color: "#ffffff" }}>{Number(v).toFixed(3)}</span> <span style={{ color: col }}>({stab})</span></span>,
+                      <span key="sname" style={{ color: "#ffffff" }}>Score</span>
+                    ];
+                  }}
+                />
+                <Bar dataKey="displayScore" radius={[0, 4, 4, 0]} cursor="pointer" isAnimationActive={false}>
+                  {[...displayedPairs].slice(0, 18).reverse().map((p, i) => (
+                    <Cell
+                      key={`sc-${i}`}
+                      fill={p.stability_label === "high" ? "#51cf66" : p.stability_label === "medium" ? "#ffd166" : "#ff8fa3"}
+                      opacity={selectedPair === p.pair_id ? 1 : 0.72}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <div style={{ display: "flex", gap: 14, padding: "6px 0 0", fontSize: 11, color: "#98a6b3" }}>
+              {[["high", "#51cf66"], ["medium", "#ffd166"], ["low", "#ff8fa3"]].map(([l, c]) => (
+                <span key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 2, background: c, display: "inline-block" }} />
+                  {l}
+                </span>
+              ))}
+            </div>
           </div>
-        </article>
-      </section>
 
-      {/* ── Closed Round-Trips Panel ── */}
-      <section className="card table-card full-width closed-trades-panel">
-        <h3>Closed Round-Trips</h3>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Round ID</th>
-                <th>Pair</th>
-                <th>Start</th>
-                <th>End</th>
-                <th>PnL</th>
-                <th>Duration (d)</th>
-                <th>Legs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {closedTrades.slice().sort((a, b) => new Date(b.end_date) - new Date(a.end_date)).slice(0, 200).map((c, idx) => {
-                const duration = c.start_date && c.end_date ? Math.round((new Date(c.end_date) - new Date(c.start_date)) / (1000 * 60 * 60 * 24)) : "-";
-                return (
-                  <tr key={`${c.roundtrip_id}-${idx}`} title={`Legs: ${buildLegsSummary(c.legs)}`}>
-                    <td>{c.roundtrip_id}</td>
-                    <td>{c.pair_id}</td>
-                    <td>{formatDateLabel(c.start_date)}</td>
-                    <td>{formatDateLabel(c.end_date)}</td>
-                    <td style={{ color: c.realized_pnl >= 0 ? "#51cf66" : "#ff6b6b" }}>{formatCurrency(c.realized_pnl)}</td>
-                    <td>{duration}</td>
-                    <td>{(c.legs || []).length}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
+          {/* Half-life vs Score scatter */}
+          <div>
+            <div className="chart-header" style={{ marginBottom: 12 }}>
+              <div>
+                <h3>Half-Life vs Score</h3>
+                <p className="chart-subtitle">Bubble size = active regimes. Click to explore spread.</p>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(180, Math.min(displayedPairs.length, 18) * 26)}>
+              <ScatterChart margin={{ top: 10, right: 24, bottom: 28, left: 10 }}>
+                <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" />
+                <XAxis
+                  dataKey="best_half_life_days" type="number" name="Half-Life"
+                  tick={{ fontSize: 11, fill: "#98a6b3" }} tickLine={false}
+                  label={{ value: "Half-Life (days)", position: "insideBottom", offset: -14, fill: "#98a6b3", fontSize: 11 }}
+                />
+                <YAxis
+                  dataKey="score" type="number" name="Score" domain={[0, 1]}
+                  tick={{ fontSize: 11, fill: "#98a6b3" }} tickLine={false}
+                  label={{ value: "Score", angle: -90, position: "insideLeft", fill: "#98a6b3", fontSize: 11 }}
+                />
+                <ZAxis dataKey="n_regimes_active" range={[40, 180]} name="Active Regimes" />
+                <Tooltip
+                  cursor={{ strokeDasharray: "3 3", stroke: "rgba(255,255,255,0.15)" }}
+                  contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.18)", borderRadius: 10, fontSize: 12 }}
+                  formatter={(v, name) => {
+                    if (name === "Score") {
+                      return [<span style={{ color: "#ffffff" }}>{Number(v).toFixed(3)}</span>, <span style={{ color: "#ffffff" }}>Score</span>];
+                    }
+                    return [name === "Half-Life" ? `${Number(v).toFixed(1)}d` : v, name];
+                  }}
+                  labelFormatter={(_lbl, payload) => <strong style={{ color: "#63e6be" }}>{payload?.[0]?.payload?.pair_id}</strong>}
+                />
+                {["high", "medium", "low"].map((stab) => (
+                  <Scatter
+                    key={stab}
+                    name={`${stab[0].toUpperCase()}${stab.slice(1)} stability`}
+                    data={displayedPairs.filter((p) => (p.stability_label ?? "low") === stab && p.best_half_life_days != null)}
+                    fill={stab === "high" ? "#51cf66" : stab === "medium" ? "#ffd166" : "#ff8fa3"}
+                    opacity={0.85}
+                    cursor="pointer"
+                    onClick={(d) => onSelectPair(d.pair_id)}
+                  />
+                ))}
+                <Legend iconSize={8} iconType="circle" wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
 
-      <SummarySlideModal
-        open={showSlide}
-        onClose={() => setShowSlide(false)}
-        stats={stats}
-        regimeSeries={regimeSeries}
-        regimeBands={regimeBands}
-        equity={equity}
-        controls={controls}
-        regimePerf={regimePerf}
-      />
+      {/* ── Pair Explorer (spec — spread chart + regime overlay) ────────── */}
+      {selectedPair && (
+        <section className="card chart-card full-width">
+          <div className="chart-header">
+            <div>
+              <h3>Pair Explorer — {selectedPair}</h3>
+              <p className="chart-subtitle">
+                {spreadViewMode === "z" ? "Z-score with regime bands and ±2σ entry / exit thresholds." : "Raw spread value with regime overlays."}
+                {pairSpread && ` Hedge ratio: ${Number(pairSpread.hedge_ratio).toFixed(4)}`}
+              </p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ display: "flex", gap: 4 }}>
+                {["z", "spread"].map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setSpreadViewMode(mode)}
+                    style={{
+                      padding: "3px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                      background: spreadViewMode === mode ? "rgba(99,230,190,0.15)" : "transparent",
+                      border: `1px solid ${spreadViewMode === mode ? "#63e6be" : "rgba(255,255,255,0.1)"}`,
+                      color: spreadViewMode === mode ? "#63e6be" : "#98a6b3",
+                    }}
+                  >
+                    {mode === "z" ? "Z-Score" : "Raw Spread"}
+                  </button>
+                ))}
+              </div>
+              <button className="ghost-button" onClick={() => { setSelectedPair(null); setPairSpread(null); }}>✕ Close</button>
+            </div>
+          </div>
+          {!pairSpread && <p className="chart-subtitle" style={{ padding: "20px 0", color: "#98a6b3" }}>Loading spread data…</p>}
+          {pairSpread && pairSpread.spread && (
+            <>
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart
+                  data={pairSpread.spread}
+                  margin={{ top: 8, right: 20, bottom: 0, left: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="spreadGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#63e6be" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="#63e6be" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={formatDateLabel}
+                    tick={{ fontSize: 11, fill: "#98a6b3", fontWeight: 600 }}
+                    tickLine={false}
+                    axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+                  />
+                  <YAxis
+                    width={46}
+                    tick={{ fontSize: 11, fill: "#98a6b3" }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => spreadViewMode === "z" ? v.toFixed(1) : Math.abs(v) >= 1000 ? `${(v/1000).toFixed(1)}k` : v.toFixed(2)}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.18)", borderRadius: 10, fontSize: 13 }}
+                    labelFormatter={(d) => <span style={{ color: "#63e6be", fontWeight: 700 }}>{formatDateLabel(d)}</span>}
+                    formatter={(v, name) => [Number(v).toFixed(4), name === "z" ? "Z-score" : "Spread"]}
+                  />
+                  {/* Regime bands */}
+                  {(() => {
+                    if (!pairSpread.regime || !pairSpread.regime.length) return null;
+                    const bands = [];
+                    let cur = pairSpread.regime[0];
+                    for (let i = 1; i < pairSpread.regime.length; i++) {
+                      if (pairSpread.regime[i].regime !== cur.regime) {
+                        bands.push({ start: cur.date, end: pairSpread.regime[i - 1].date, regime: cur.regime });
+                        cur = pairSpread.regime[i];
+                      }
+                    }
+                    bands.push({ start: cur.date, end: pairSpread.regime[pairSpread.regime.length - 1].date, regime: cur.regime });
+                    return bands.map((b, i) => (
+                      <ReferenceArea key={i} x1={b.start} x2={b.end} fill={REGIME_META[b.regime]?.bg ?? "transparent"} ifOverflow="hidden" />
+                    ));
+                  })()}
+                  {spreadViewMode === "z" && (
+                    <>
+                      <ReferenceArea y1={1} y2={2}  fill="rgba(255,107,107,0.07)" ifOverflow="hidden" />
+                      <ReferenceArea y1={-2} y2={-1} fill="rgba(255,107,107,0.07)" ifOverflow="hidden" />
+                      <ReferenceLine y={0}   stroke="rgba(255,255,255,0.2)"  strokeDasharray="4 4" />
+                      <ReferenceLine y={2}   stroke="rgba(255,107,107,0.55)" strokeDasharray="3 3" strokeWidth={1.5} label={{ value: "+2σ entry", position: "right", fontSize: 10, fill: "rgba(255,107,107,0.85)" }} />
+                      <ReferenceLine y={-2}  stroke="rgba(255,107,107,0.55)" strokeDasharray="3 3" strokeWidth={1.5} label={{ value: "-2σ entry", position: "right", fontSize: 10, fill: "rgba(255,107,107,0.85)" }} />
+                      <ReferenceLine y={0.5} stroke="rgba(99,230,190,0.35)"  strokeDasharray="2 5" label={{ value: "exit", position: "right", fontSize: 9, fill: "rgba(99,230,190,0.65)" }} />
+                      <ReferenceLine y={-0.5} stroke="rgba(99,230,190,0.35)" strokeDasharray="2 5" label={{ value: "exit", position: "right", fontSize: 9, fill: "rgba(99,230,190,0.65)" }} />
+                    </>
+                  )}
+                  <Area type="monotone" dataKey={spreadViewMode === "z" ? "z" : "spread"} stroke="#63e6be" strokeWidth={1.5} fill="url(#spreadGrad)" dot={false} isAnimationActive={false} />
+                  <Brush dataKey="date" height={20} stroke="#63e6be" fill="rgba(99,230,190,0.06)" travellerWidth={8} tickFormatter={formatDateLabel} />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <RegimeLegend />
+            </>
+          )}
+        </section>
+      )}
+
+      {/* ── Regime Comparison View (spec §4 — pairs per regime) ───────────── */}
+      {Object.keys(pairsByRegime).length > 0 && (
+        <section className="card full-width">
+          <div className="chart-header">
+            <h3>Regime Comparison View</h3>
+            <p className="chart-subtitle">Cointegrated pairs discovered in each distinct market regime.</p>
+          </div>
+          <ResponsiveContainer width="100%" height={88}>
+            <BarChart
+              data={Object.entries(pairsByRegime)
+                .sort(([a], [b]) => Number(a) - Number(b))
+                .map(([regime, prs]) => ({
+                  label: REGIME_META[Number(regime)]?.label?.split(" ")[0] ?? `R${regime}`,
+                  count: prs.length,
+                  regime: Number(regime),
+                  avgHL: prs.reduce((s, p) => s + (Number(p.half_life_days) || 0), 0) / Math.max(1, prs.length),
+                }))}
+              margin={{ top: 4, right: 16, bottom: 0, left: 16 }}
+            >
+              <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#98a6b3" }} tickLine={false} axisLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: "#98a6b3" }} tickLine={false} axisLine={false} width={28} />
+              <Tooltip
+                contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.18)", borderRadius: 10, fontSize: 12 }}
+                formatter={(v, name, props) => [
+                  <span key="rc">{v} pairs &nbsp;<span style={{ color: "#98a6b3" }}>avg HL {Number(props.payload?.avgHL ?? 0).toFixed(1)}d</span></span>,
+                  "Pairs",
+                ]}
+              />
+              <Bar dataKey="count" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                {Object.entries(pairsByRegime)
+                  .sort(([a], [b]) => Number(a) - Number(b))
+                  .map(([regime], i) => (
+                    <Cell key={`rc-${i}`} fill={REGIME_META[Number(regime)]?.color ?? "#888"} opacity={0.82} />
+                  ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div className="regime-comparison-grid">
+            {Object.entries(pairsByRegime)
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .map(([regime, pairs]) => (
+                <div key={regime} className="regime-comparison-col">
+                  <div
+                    className="regime-comparison-header"
+                    style={{ borderColor: REGIME_META[Number(regime)]?.color ?? "#888" }}
+                  >
+                    <span
+                      className="regime-dot-inline"
+                      style={{ "--dot-color": REGIME_META[Number(regime)]?.color ?? "#888" }}
+                    />
+                    <strong>{REGIME_META[Number(regime)]?.label ?? `Regime ${regime}`}</strong>
+                    <span className="stat-badge" style={{ marginLeft: "auto" }}>{pairs.length}</span>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr><th>Pair</th><th>p-value</th><th>Half-Life</th><th>Corr</th></tr>
+                      </thead>
+                      <tbody>
+                        {pairs.slice(0, 10).map((p) => (
+                          <tr
+                            key={`${regime}-${p.pair_id}`}
+                            className="clickable-row"
+                            onClick={() => onSelectPair(p.pair_id)}
+                            title="Click to open Pair Explorer"
+                          >
+                            <td>{p.pair_id}</td>
+                            <td style={{ color: Number(p.coint_pvalue) < 0.01 ? "#51cf66" : "#ffd166" }}>
+                              {Number(p.coint_pvalue).toExponential(2)}
+                            </td>
+                            <td>{Number(p.half_life_days ?? 0).toFixed(1)}d</td>
+                            <td>{Number(p.corr ?? 0).toFixed(3)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── Network View (spec — optional, nodes=assets, edges=strong pairs) ── */}
+      {networkData && networkData.nodes.length > 0 && (
+        <section className="card full-width">
+          <div className="chart-header">
+            <div>
+              <h3>Network View</h3>
+              <p className="chart-subtitle">
+                Assets as nodes, strong cointegrated relationships as edges. Edge weight = 1 − p-value.
+              </p>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+              Filter regime:
+              <select
+                value={networkRegime}
+                onChange={(e) => onNetworkRegimeChange(e.target.value)}
+                style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, color: "#e0eaf0", padding: "4px 8px" }}
+              >
+                <option value="">All</option>
+                {Object.keys(REGIME_META).sort((a,b) => Number(a) - Number(b)).map((r) => (
+                  <option key={r} value={r}>{`${REGIME_META[Number(r)]?.label ?? `Regime ${r}`} (${(pairsByRegime?.[r]?.length) ?? 0})`}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <NetworkGraph nodes={networkData.nodes} edges={networkData.edges} onSelectPair={onSelectPair} />
+        </section>
+      )}
 
       {/* ── Footer ── */}
       <footer className="status-footer">

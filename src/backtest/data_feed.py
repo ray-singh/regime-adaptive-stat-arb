@@ -43,7 +43,22 @@ class HistoricalDataFeed:
         warmup_bars: int = 0,
     ):
         df = price_df.copy()
-        df.index = pd.to_datetime(df.index).tz_localize(None)
+        # Normalize index to timezone-naive DatetimeIndex safely.
+        idx = pd.to_datetime(df.index)
+        try:
+            if getattr(idx, "tz", None) is not None:
+                idx = idx.tz_convert("UTC").tz_localize(None)
+            else:
+                idx = idx.tz_localize(None)
+        except Exception:
+            try:
+                idx = idx.tz_localize(None)
+            except Exception:
+                try:
+                    idx = idx.tz_convert(None)
+                except Exception:
+                    pass
+        df.index = idx
         df = df.sort_index()
 
         if start:
