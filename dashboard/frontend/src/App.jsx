@@ -62,13 +62,6 @@ function RegimeLegend() {
   );
 }
 
-
-
-// ── Annotated timeline ────────────────────────────────────────────────────────
-
-// ── Summary slide modal (exportable) ─────────────────────────────────────────
-
-
 // ── Network View component (circular layout, SVG-based) ──────────────────────
 function NetworkGraph({ nodes, edges, onSelectPair }) {
   const W = 700, H = 480, CX = W / 2, CY = H / 2;
@@ -290,70 +283,6 @@ export default function App() {
     window.localStorage.setItem("dashboard_controls", JSON.stringify(controls));
   }, [controls]);
 
-  const onRun = async () => {
-    setRunning(true);
-    setError("");
-    // Validate risk inputs when enabled
-    if (controls.useRisk) {
-      const rl = controls.regimeLeverageCaps || {};
-      const mp = controls.regimeMaxOpenPairs || {};
-      const pp = controls.regimePairNotionalPct || {};
-      const tp = controls.regimeTickerNotionalPct || {};
-      for (const r of [0,1,2,3]) {
-        const lev = Number(rl[r]);
-        const maxp = Number(mp[r]);
-        const pnot = Number(pp[r]);
-        const tnot = Number(tp[r]);
-        if (!isFinite(lev) || lev <= 0 || lev > 20) { setError(`Invalid leverage for regime ${r}`); setRunning(false); return; }
-        if (!Number.isInteger(maxp) || maxp < 0 || maxp > 200) { setError(`Invalid max pairs for regime ${r}`); setRunning(false); return; }
-        if (!isFinite(pnot) || pnot < 0 || pnot > 1) { setError(`Invalid pair notional pct for regime ${r}`); setRunning(false); return; }
-        if (!isFinite(tnot) || tnot < 0 || tnot > 1) { setError(`Invalid ticker notional pct for regime ${r}`); setRunning(false); return; }
-      }
-    }
-    try {
-      const overrides = {
-        initialCapital:       Number(controls.initialCapital),
-        trainPct:             Number(controls.trainPct),
-        maxPairs:             Number(controls.maxPairs),
-        reselectionInterval:  Number(controls.reselectionInterval),
-        reselectionEnabled:   Boolean(controls.reselectionEnabled),
-        entryZ:               Number(controls.entryZ),
-        exitZ:                Number(controls.exitZ),
-        stopZ:                Number(controls.stopZ),
-        nStates:              Number(controls.nStates),
-        // Regime-adaptive signal thresholds (always forwarded)
-        regimeEntryZ:         controls.regimeEntryZ,
-        regimeExitZ:          controls.regimeExitZ,
-        regimePositionScale:  controls.regimePositionScale,
-      };
-
-      if (controls.useMacroTickers) {
-        // Default macro tickers recommended by the training guide
-        overrides.macroTickers = ["^VIX", "GLD", "TLT", "USO"];
-      }
-
-      const payload = {
-        useRisk: controls.useRisk,
-        overrides,
-        universe: controls.universe,
-      };
-      // Attach regime maps if risk enabled
-      if (controls.useRisk) {
-        overrides.regimeLeverageCaps = controls.regimeLeverageCaps;
-        overrides.regimeMaxOpenPairs = controls.regimeMaxOpenPairs;
-        overrides.regimePairNotionalPct = controls.regimePairNotionalPct;
-        overrides.regimeTickerNotionalPct = controls.regimeTickerNotionalPct;
-      }
-      const result = await runBacktest(payload);
-      if (!result.ok) setError(result.error || "Backtest failed");
-      await refreshData();
-    } catch (exc) {
-      setError(String(exc));
-    } finally {
-      setRunning(false);
-    }
-  };
-
   const stats = summary?.stats ?? {};
   const risk  = summary?.risk  ?? {};
 
@@ -365,7 +294,44 @@ export default function App() {
 
   // Which pairs to show in Top Pairs Panel (optionally filter by regime)
   const displayedPairs = useMemo(() => {
-    if (!topPairsRegimeFilter) return rankedPairs || [];
+    // Build a map: pair_id -> list of regimes where it was discovered
+    const activeMap = {};
+    Object.entries(pairsByRegime || {}).forEach(([regime, prs]) => {
+      (prs || []).forEach((p) => {
+        if (!p?.pair_id) return;
+        if (!activeMap[p.pair_id]) activeMap[p.pair_id] = [];
+        if (!activeMap[p.pair_id].includes(Number(regime))) activeMap[p.pair_id].push(Number(regime));
+      });
+    });
+
+    if (!topPairsRegimeFilter) {
+      return (rankedPairs || []).map((p, i) => {
+        // Prefer directly-embedded stable/unstable lists from the ranking payload
+        // (covers ALL pairs, not just the top-20 per regime in pairsByRegime).
+        // Fall back to the activeMap derived from pairsByRegime, then to empty.
+        let active_regimes;
+        if (Array.isArray(p.stable_regimes) || Array.isArray(p.unstable_regimes)) {
+          active_regimes = [
+            ...(p.stable_regimes || []),
+            ...(p.unstable_regimes || []),
+          ].map(Number).sort((a, b) => a - b);
+        } else {
+          active_regimes = activeMap[p.pair_id] || [];
+        }
+        return {
+          pair_id: p.pair_id,
+          rank: p.rank ?? i + 1,
+          score: p.score ?? 0,
+          stability_label: p.stability_label ?? "—",
+          regime_sensitive: !!p.regime_sensitive,
+          best_half_life_days: p.best_half_life_days,
+          best_coint_pvalue: p.best_coint_pvalue ?? p.coint_pvalue,
+          n_regimes_active: active_regimes.length || p.n_regimes_active || 0,
+          active_regimes,
+        };
+      });
+    }
+
     const arr = pairsByRegime?.[topPairsRegimeFilter] || [];
     return arr.map((p, i) => ({
       pair_id: p.pair_id,
@@ -375,9 +341,11 @@ export default function App() {
       regime_sensitive: !!p.regime_sensitive,
       best_half_life_days: p.half_life_days ?? p.best_half_life_days,
       best_coint_pvalue: p.coint_pvalue ?? p.best_coint_pvalue,
-      n_regimes_active: p.n_regimes_active ?? 1,
+      n_regimes_active: (activeMap[p.pair_id]?.length) ?? p.n_regimes_active ?? 0,
+      active_regimes: activeMap[p.pair_id] || [Number(topPairsRegimeFilter)],
     }));
   }, [rankedPairs, pairsByRegime, topPairsRegimeFilter]);
+
 
   // Color-stop stripes behind equity curve (rendered as SVG linear gradient segments)
   // We mark regime changes so they can be rendered as reference areas.
@@ -563,7 +531,31 @@ export default function App() {
                     <td style={{ color: Number(p.best_coint_pvalue) < 0.01 ? "#51cf66" : "#ffd166" }}>
                       {p.best_coint_pvalue != null ? Number(p.best_coint_pvalue).toExponential(2) : "—"}
                     </td>
-                    <td>{p.n_regimes_active ?? "—"}</td>
+                    <td>
+                      {((p.active_regimes || [])?.length > 0) ? (
+                        (p.active_regimes || []).map((r) => (
+                          <span
+                            key={`${p.pair_id}-r-${r}`}
+                            className="regime-badge"
+                            style={{
+                              background: REGIME_META[Number(r)]?.color ?? "#888",
+                              color: "#071829",
+                              padding: "2px 8px",
+                              borderRadius: 8,
+                              fontSize: 11,
+                              marginRight: 6,
+                              display: "inline-block",
+                              fontWeight: 700,
+                            }}
+                            title={REGIME_META[Number(r)]?.label ?? `Regime ${r}`}
+                          >
+                            {REGIME_META[Number(r)]?.label?.split(" ")?.[0] ?? `R${r}`}
+                          </span>
+                        ))
+                      ) : (
+                        <span>{p.n_regimes_active ?? "—"}</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -669,7 +661,6 @@ export default function App() {
                     onClick={(d) => onSelectPair(d.pair_id)}
                   />
                 ))}
-                <Legend iconSize={8} iconType="circle" wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
               </ScatterChart>
             </ResponsiveContainer>
           </div>

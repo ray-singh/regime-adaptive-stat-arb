@@ -8,8 +8,8 @@ Workflow:
 Signal rules:
     Entry long spread  (buy leg1, sell leg2): z < -entry_z
     Entry short spread (sell leg1, buy leg2): z >  entry_z
-    Exit:                                      |z| <  exit_z
-    Stop:                                      |z| >  stop_z
+    Exit: |z| <  exit_z
+    Stop: |z| >  stop_z
 """
 
 import os
@@ -204,7 +204,12 @@ class PairsSelector:
             s1 = cleaned[t1]
             s2 = cleaned[t2]
             common = s1.index.intersection(s2.index)
-            if len(common) < 252:
+            # Require a reasonable amount of overlap between legs before testing.
+            # For global discovery 252 trading days (~1 year) is a strict default,
+            # but for per-regime discovery regimes may be shorter. Use a dynamic
+            # threshold: at least 60 days OR 60% of the regime slice, capped at 252.
+            min_common = max(60, int(min(252, len(price_df) * 0.6)))
+            if len(common) < min_common:
                 continue
             args_list.append((
                 t1, t2,
