@@ -32,6 +32,7 @@ import {
 } from "./api";
 
 import RiskControls from "./components/RiskControls";
+import { SignalThresholdControls } from "./components/RiskControls";
 import { REGIME_META, DEFAULT_CONTROLS } from "./controls";
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function formatDateLabel(dateString) {
@@ -410,6 +411,10 @@ export default function App() {
         exitZ:                Number(controls.exitZ),
         stopZ:                Number(controls.stopZ),
         nStates:              Number(controls.nStates),
+        // Regime-adaptive signal thresholds (always forwarded)
+        regimeEntryZ:         controls.regimeEntryZ,
+        regimeExitZ:          controls.regimeExitZ,
+        regimePositionScale:  controls.regimePositionScale,
       };
 
       if (controls.useMacroTickers) {
@@ -595,6 +600,7 @@ export default function App() {
         {controls.useRisk && (
           <RiskControls controls={controls} setControls={setControls} setError={setError} />
         )}
+        <SignalThresholdControls controls={controls} setControls={setControls} />
         {error ? <p className="error-text">⚠ {error}</p> : null}
       </section>
 

@@ -216,3 +216,18 @@ gitignore
 
 data/analysis_best_run
 data/analysis_low_turnover
+
+# Local caches, demos, and generated outputs
+cache/
+cache_factset/
+plots/
+data/cache/
+data/plots/
+src/plots/
+
+# macOS
+.DS_Store
+
+# Compiled Python artifacts (explicit)
+*.pyc
+__pycache__/

@@ -81,3 +81,71 @@ export default function RiskControls({ controls, setControls, setError }) {
     </div>
   );
 }
+
+
+/** Signal threshold controls — always shown (independent of risk manager toggle) */
+export function SignalThresholdControls({ controls, setControls }) {
+  return (
+    <div className="card risk-controls" style={{ marginTop: 12 }}>
+      <h3 style={{ marginTop: 0 }}>Signal Thresholds — Regime-Adaptive</h3>
+      <p className="chart-subtitle">
+        Per-regime entry / exit z-score thresholds and position size multipliers used by the Kalman + ensemble signal model.
+        Bull markets allow tighter entries; crisis regimes block new positions.
+      </p>
+
+      <table className="risk-table">
+        <thead>
+          <tr>
+            <th>Regime</th>
+            <th title="Z-score magnitude required to enter a trade (lower = more trades)">Entry Z</th>
+            <th title="Z-score below which the position is closed (convergence target)">Exit Z</th>
+            <th title="Fraction of baseline position size in this regime (1.0 = full, 0 = blocked)">Position scale</th>
+          </tr>
+        </thead>
+        <tbody>
+          {[0,1,2,3].map((r) => (
+            <tr key={`sig-${r}`}>
+              <td>
+                <span className="regime-dot-inline" style={{ "--dot-color": REGIME_META[r].color }} />
+                <strong>{REGIME_META[r].label}</strong>
+              </td>
+              <td>
+                <input
+                  type="number" step="0.1" min="0.5" max="6"
+                  value={controls.regimeEntryZ?.[r] ?? ""}
+                  onChange={(e) => setControls({
+                    ...controls,
+                    regimeEntryZ: { ...controls.regimeEntryZ, [r]: Number(e.target.value) },
+                  })}
+                />
+              </td>
+              <td>
+                <input
+                  type="number" step="0.05" min="0" max="3"
+                  value={controls.regimeExitZ?.[r] ?? ""}
+                  onChange={(e) => setControls({
+                    ...controls,
+                    regimeExitZ: { ...controls.regimeExitZ, [r]: Number(e.target.value) },
+                  })}
+                />
+              </td>
+              <td>
+                <input
+                  type="number" step="0.05" min="0" max="1"
+                  value={controls.regimePositionScale?.[r] ?? ""}
+                  onChange={(e) => setControls({
+                    ...controls,
+                    regimePositionScale: { ...controls.regimePositionScale, [r]: Number(e.target.value) },
+                  })}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ marginTop: 8, fontSize: 13, color: "#98a6b3" }}>
+        Entry Z must be &gt; Exit Z. Position scale of 0 = no new entries in that regime.
+      </div>
+    </div>
+  );
+}

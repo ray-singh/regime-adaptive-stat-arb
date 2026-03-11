@@ -126,6 +126,7 @@ class PairsBacktestStrategy:
         regime_size_map: Optional[dict] = None,
         regime_entry_z_map: Optional[dict] = None,
         regime_exit_z_map: Optional[dict] = None,
+        regime_position_scale_map: Optional[dict] = None,
         warmup_bars: int = 60,
         strategy_id: str = "pairs",
         pair_reselector=None,
@@ -185,6 +186,7 @@ class PairsBacktestStrategy:
             use_learned_weights=False,
             regime_entry_thresholds=regime_entry_z_map or DEFAULT_REGIME_ENTRY_Z,
             regime_exit_thresholds=regime_exit_z_map or DEFAULT_REGIME_EXIT_Z,
+            regime_position_scale=regime_position_scale_map or {0: 1.0, 1: 0.75, 2: 0.5, 3: 0.1},
         )
         self._meta_signal = MetaSignalModel(config=meta_cfg)
 

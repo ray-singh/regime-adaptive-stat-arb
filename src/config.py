@@ -64,6 +64,8 @@ class PairsConfig:
     regime_entry_z: dict = field(default_factory=lambda: {0: 1.5, 1: 2.0, 2: 2.5, 3: 4.0})
     # Low-vol: exit close to mean, High-vol: exit earlier to lock in partial gains
     regime_exit_z: dict = field(default_factory=lambda: {0: 0.3, 1: 0.5, 2: 0.8, 3: 1.0})
+    # Regime-adaptive position size scaling (1.0=full, 0.0=blocked)
+    regime_position_scale: dict = field(default_factory=lambda: {0: 1.0, 1: 0.75, 2: 0.5, 3: 0.1})
 
 
 @dataclass

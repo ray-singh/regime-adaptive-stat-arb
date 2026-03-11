@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PlatformConfig, setup_logging
 from pathlib import Path
 from data.yfinance_client import YFinanceClient
-from features.featurize import compute_standard_features
+from features.featurize import compute_standard_features, compute_market_correlation_feature
 from regime.hmm_detector import HMMRegimeDetector
 from strategy.pairs_trading import PairsSelector
 from strategy.pair_reselection import PairReSelector
@@ -256,7 +256,7 @@ def fit_regime_detector(
         return None
 
     # Guide §2 — base stationary features (never train on raw prices)
-    base_cols = [c for c in ["logret", "rv_20", "mom_20", "volume_zscore"] if c in feat.columns]
+    base_cols = [c for c in ["logret", "rv_20", "mom_20", "volume_zscore", "vol_ts_zscore"] if c in feat.columns]
     extra_cols: list = []
 
     # Guide §6 — optional multivariate macro enrichment
@@ -402,6 +402,20 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True, use_plot: bool = Tr
     # 3. In-sample: fit regime detector + select pairs
     print("\n[3/5] Fitting regime detector and selecting pairs (in-sample)…")
 
+    # Augment regime-ticker features with market-wide mean pairwise correlation.
+    # Gives the HMM a cross-sectional risk signal beyond single-ticker statistics.
+    try:
+        market_corr = compute_market_correlation_feature(wide, window=60, max_tickers=30)
+        regime_feat = feature_dict.get(cfg.regime.regime_ticker)
+        if regime_feat is not None and not market_corr.empty:
+            regime_feat = regime_feat.copy()
+            market_corr_aligned = market_corr.reindex(regime_feat.index, method="nearest")
+            regime_feat["market_corr"] = market_corr_aligned.values
+            feature_dict[cfg.regime.regime_ticker] = regime_feat
+            logger.info("Market correlation feature injected into regime-ticker features (%d rows)", len(market_corr))
+    except Exception as e:
+        logger.warning("Could not compute market correlation feature: %s", e)
+
     # Fetch macro features for multivariate HMM if configured (guide §6)
     macro_dict: dict = {}
     if cfg.regime.macro_tickers:
@@ -527,6 +541,7 @@ def run_backtest(cfg: PlatformConfig, use_risk: bool = True, use_plot: bool = Tr
         regime_ticker=cfg.regime.regime_ticker,
         regime_entry_z_map=cfg.pairs.regime_entry_z,
         regime_exit_z_map=cfg.pairs.regime_exit_z,
+        regime_position_scale_map=getattr(cfg.pairs, "regime_position_scale", None),
         warmup_bars=cfg.pairs.warmup_bars,
         pair_reselector=pair_reselector,
         all_tickers=cfg.data.tickers,

@@ -72,10 +72,83 @@ def compute_standard_features(df: pd.DataFrame, windows: List[int] = [5, 20, 60]
         vol_std  = df['volume'].rolling(window=20, min_periods=10).std()
         df['volume_zscore'] = (df['volume'] - vol_mean) / vol_std.replace(0, np.nan)
 
+    # Vol term-structure: ratio of short-term to long-term realized vol.
+    # >1 = near-term risk elevated vs. long-run baseline (stress indicator).
+    # <1 = near-term calmer than history (low-vol regime).
+    short_rv = f'rv_{windows[0]}'   # e.g. rv_5
+    long_rv  = f'rv_{windows[-1]}'  # e.g. rv_60
+    if short_rv in df.columns and long_rv in df.columns:
+        df['vol_ts_ratio'] = df[short_rv] / df[long_rv].replace(0, np.nan)
+        # z-score the ratio so the HMM expects mean-zero stationary input
+        vts_mean = df['vol_ts_ratio'].rolling(window=windows[-1], min_periods=windows[0]).mean()
+        vts_std  = df['vol_ts_ratio'].rolling(window=windows[-1], min_periods=windows[0]).std()
+        df['vol_ts_zscore'] = (df['vol_ts_ratio'] - vts_mean) / vts_std.replace(0, np.nan)
+
     # Clean infinite values
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     return df
+
+
+def compute_market_correlation_feature(
+    wide_prices: "pd.DataFrame",
+    window: int = 60,
+    min_periods: int = 20,
+    max_tickers: int = 30,
+) -> "pd.Series":
+    """Compute rolling mean pairwise correlation across universe tickers.
+
+    Returns a Series indexed like wide_prices representing the 'average
+    co-movement' of the universe — high values indicate a risk-on/correlated
+    market, low values indicate divergent / idiosyncratic conditions.
+
+    Parameters
+    ----------
+    wide_prices : DataFrame
+        Wide price matrix (dates × tickers).
+    window : int
+        Rolling window for correlation.
+    min_periods : int
+        Minimum observations for a valid correlation.
+    max_tickers : int
+        Cap the ticker count to avoid O(n²) explosion. Takes first N tickers.
+
+    Returns
+    -------
+    pd.Series named 'market_corr'
+    """
+    import pandas as pd
+
+    if wide_prices.empty or wide_prices.shape[1] < 2:
+        return pd.Series(dtype=float, name="market_corr")
+
+    # Cap number of tickers for performance
+    cols = wide_prices.columns[:max_tickers]
+    prices = wide_prices[cols].copy()
+
+    # Compute log returns
+    log_rets = np.log(prices).diff()
+
+    # Rolling mean pairwise correlation via expanding pairs
+    n = len(cols)
+    pair_corrs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            c = (
+                log_rets.iloc[:, i]
+                .rolling(window, min_periods=min_periods)
+                .corr(log_rets.iloc[:, j])
+            )
+            pair_corrs.append(c)
+
+    if not pair_corrs:
+        return pd.Series(0.0, index=wide_prices.index, name="market_corr")
+
+    # Mean across all pairs
+    corr_df = pd.concat(pair_corrs, axis=1)
+    mean_corr = corr_df.mean(axis=1)
+    mean_corr.name = "market_corr"
+    return mean_corr
 
 
 def rolling_pairwise_correlation(df: pd.DataFrame, left: str, right: str, window: int = 20) -> pd.Series:
@@ -138,6 +211,11 @@ def compute_market_features(wide_df: pd.DataFrame, window: int = 20) -> pd.DataF
     # Cross-sectional dispersion of rolling momentum (high = uneven sector performance = trending)
     rolling_mom = wide_df.pct_change(window)
     features['mom_dispersion'] = rolling_mom.std(axis=1)
+
+    # Index momentum: rolling return of equal-weight market portfolio.
+    # Positive = market trending up, negative = market trending down.
+    eq_weight_ret = rets.mean(axis=1)
+    features['index_momentum'] = eq_weight_ret.rolling(window, min_periods=max(1, window // 2)).sum()
 
     features.replace([np.inf, -np.inf], np.nan, inplace=True)
     return features

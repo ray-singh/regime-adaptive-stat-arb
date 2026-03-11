@@ -81,6 +81,13 @@ def _build_config_from_payload(payload: dict[str, Any]) -> tuple[PlatformConfig,
         raw = overrides["regimeExitZ"]
         if isinstance(raw, dict):
             cfg.pairs.regime_exit_z = {int(k): float(v) for k, v in raw.items()}
+    if "regimePositionScale" in overrides:
+        raw = overrides["regimePositionScale"]
+        if isinstance(raw, dict):
+            try:
+                cfg.pairs.regime_position_scale = {int(k): float(v) for k, v in raw.items()}
+            except Exception:
+                pass
     if "nStates" in overrides:
         cfg.regime.n_states = int(overrides["nStates"])
 

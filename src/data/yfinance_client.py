@@ -368,6 +368,56 @@ class YFinanceClient:
         
         return None
     
+    def get_price_matrix(
+        self,
+        tickers: List[str],
+        start_date: Optional[Union[str, datetime]] = None,
+        end_date: Optional[Union[str, datetime]] = None,
+        period: str = "10y",
+        price_col: str = "close",
+        use_cache: bool = True,
+    ) -> pd.DataFrame:
+        """Fetch multiple tickers and return a wide Date x Ticker price matrix.
+
+        This is the standard input format for ``compute_market_features`` and
+        the Pair Discovery Engine.
+
+        Parameters
+        ----------
+        tickers : list[str]
+            Ticker symbols to fetch.
+        start_date / end_date : str | datetime, optional
+            Date range; mutually exclusive with ``period``.
+        period : str
+            yfinance period string used when start/end not provided.
+        price_col : str
+            Which price column to pivot (default ``'close'``).
+        use_cache : bool
+            Pass through to individual ``fetch_ticker`` calls.
+
+        Returns
+        -------
+        pd.DataFrame
+            Wide DataFrame with DatetimeIndex and one column per ticker.
+            Dates with no data for a ticker are NaN.
+        """
+        long_df = self.fetch_bulk(
+            tickers=tickers,
+            start_date=start_date,
+            end_date=end_date,
+            period=period,
+            use_cache=use_cache,
+            show_progress=False,
+        )
+        if long_df.empty:
+            return pd.DataFrame()
+
+        col = price_col if price_col in long_df.columns else "close"
+        wide = long_df.pivot_table(index="Date", columns="ticker", values=col, aggfunc="last")
+        wide.index = pd.to_datetime(wide.index)
+        wide.sort_index(inplace=True)
+        return wide
+
     def get_data_summary(self, df: pd.DataFrame) -> Dict:
         """Generate summary statistics for fetched data."""
         if df.empty:

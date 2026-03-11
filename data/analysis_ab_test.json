@@ -1,0 +1,18 @@
+{
+  "baseline": {
+    "final_equity": null,
+    "cagr_pct": null,
+    "sharpe": null,
+    "max_drawdown_pct": null,
+    "trades": 0,
+    "regime_perf": null
+  },
+  "enhanced": {
+    "final_equity": null,
+    "cagr_pct": null,
+    "sharpe": null,
+    "max_drawdown_pct": null,
+    "trades": 0,
+    "regime_perf": null
+  }
+}

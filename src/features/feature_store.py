@@ -76,3 +76,48 @@ class FeatureStore:
             except Exception as e:
                 logger.warning(f"Failed to compute features for {t}: {e}")
         return succeeded
+
+    def compute_and_store_market_features(self, wide_df: "pd.DataFrame", window: int = 20, filename: str = "market_features") -> "pd.DataFrame":
+        """Compute cross-asset market-level features and persist them as the shared feature table.
+
+        This is the spec §2 'feature table' — one row per date with market-wide
+        signals (ret_dispersion, avg_rv, avg_corr, mom_dispersion, index_momentum)
+        used as inputs to the Regime Detection module.
+
+        Parameters
+        ----------
+        wide_df : DataFrame
+            Wide price matrix (Date × Ticker) — typically from
+            ``YFinanceClient.get_price_matrix()``.
+        window : int
+            Rolling window for volatility / correlation estimates.
+        filename : str
+            Parquet filename stem (without extension) stored under cache_dir.
+
+        Returns
+        -------
+        DataFrame with DatetimeIndex and market-level feature columns.
+        """
+        from .featurize import compute_market_features
+        features = compute_market_features(wide_df, window=window)
+        path = self.cache_dir / f"{filename}.parquet"
+        try:
+            features.to_parquet(path, compression="snappy")
+            logger.info(f"Saved market features ({len(features)} rows) to {path}")
+        except Exception as e:
+            logger.warning(f"Failed to save market features: {e}")
+        return features
+
+    def load_market_features(self, filename: str = "market_features") -> "pd.DataFrame":
+        """Load the persisted market feature table; returns empty DataFrame if not found."""
+        path = self.cache_dir / f"{filename}.parquet"
+        if not path.exists():
+            logger.info(f"Market feature file not found: {path}")
+            return pd.DataFrame()
+        try:
+            df = pd.read_parquet(path)
+            df.index = pd.to_datetime(df.index)
+            return df
+        except Exception as e:
+            logger.warning(f"Failed to load market features: {e}")
+            return pd.DataFrame()
