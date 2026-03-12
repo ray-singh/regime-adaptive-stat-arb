@@ -18,7 +18,6 @@ if SRC_DIR not in sys.path:
 import logging
 
 from config import PlatformConfig, setup_logging
-from backtest.run_backtest import run_backtest
 from backtest.job_queue import BacktestJobQueue, JobStatus
 
 logger = logging.getLogger(__name__)
@@ -115,6 +114,10 @@ def _run_discovery_pipeline(payload: dict) -> dict:
 
 def _run_backtest_from_payload(payload: dict) -> dict:
     """Thin adapter so BacktestJobQueue can call run_backtest."""
+    # Import here to avoid importing heavy backtest dependencies at module
+    # import time (which can fail inside minimal container images).
+    from backtest.run_backtest import run_backtest
+
     cfg, use_risk = _build_config_from_payload(payload)
     return run_backtest(cfg, use_risk=use_risk)
 
@@ -309,6 +312,7 @@ def create_app() -> Flask:
             store.cache.clear()
 
         try:
+            from backtest.run_backtest import run_backtest
             cfg, use_risk = _build_config_from_payload(payload)
             result = run_backtest(cfg, use_risk=use_risk)
             with store.lock:

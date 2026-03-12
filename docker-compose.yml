@@ -1,0 +1,27 @@
+version: "3.8"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: dashboard/backend/Dockerfile
+    ports:
+      - "5001:5001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: dashboard/frontend/Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - BACKEND_URL=http://backend:5001
+    volumes:
+      - ./dashboard/frontend:/app:cached
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: ["sh", "-c", "npm run dev -- --host 0.0.0.0"]
+    restart: unless-stopped
