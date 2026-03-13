@@ -724,6 +724,13 @@ export default function App() {
                   {(() => {
                     if (!pairSpread.regime || !pairSpread.regime.length) return null;
                     const bands = [];
+                    // If regime series starts after spread history, add an "unknown" band
+                    const spreadStart = (pairSpread.spread && pairSpread.spread.length) ? pairSpread.spread[0].date : null;
+                    const firstRegimeDate = pairSpread.regime[0].date;
+                    if (spreadStart && firstRegimeDate && new Date(firstRegimeDate) > new Date(spreadStart)) {
+                      bands.push({ start: spreadStart, end: firstRegimeDate, regime: null });
+                    }
+
                     let cur = pairSpread.regime[0];
                     for (let i = 1; i < pairSpread.regime.length; i++) {
                       if (pairSpread.regime[i].regime !== cur.regime) {
@@ -732,9 +739,29 @@ export default function App() {
                       }
                     }
                     bands.push({ start: cur.date, end: pairSpread.regime[pairSpread.regime.length - 1].date, regime: cur.regime });
-                    return bands.map((b, i) => (
-                      <ReferenceArea key={i} x1={b.start} x2={b.end} fill={REGIME_META[b.regime]?.bg ?? "transparent"} ifOverflow="hidden" />
-                    ));
+
+                    return bands.map((b, i) => {
+                      if (b.regime == null) {
+                        return (
+                          <ReferenceArea
+                            key={`unknown-${i}`}
+                            x1={b.start}
+                            x2={b.end}
+                            fill="rgba(255,255,255,0.02)"
+                            ifOverflow="hidden"
+                          />
+                        );
+                      }
+                      return (
+                        <ReferenceArea
+                          key={i}
+                          x1={b.start}
+                          x2={b.end}
+                          fill={REGIME_META[b.regime]?.bg ?? "transparent"}
+                          ifOverflow="hidden"
+                        />
+                      );
+                    });
                   })()}
                   {spreadViewMode === "z" && (
                     <>
@@ -762,7 +789,7 @@ export default function App() {
         <section className="card full-width">
           <div className="chart-header">
             <h3>Regime Comparison View</h3>
-            <p className="chart-subtitle">Cointegrated pairs discovered in each distinct market regime.</p>
+            <p className="chart-subtitle">Average half-life of cointegrated pairs discovered in each distinct market regime.</p>
           </div>
           <ResponsiveContainer width="100%" height={88}>
             <BarChart
@@ -782,11 +809,11 @@ export default function App() {
               <Tooltip
                 contentStyle={{ background: "rgba(8,22,36,0.95)", border: "1px solid rgba(99,230,190,0.18)", borderRadius: 10, fontSize: 12 }}
                 formatter={(v, name, props) => [
-                  <span key="rc">{v} pairs &nbsp;<span style={{ color: "#98a6b3" }}>avg HL {Number(props.payload?.avgHL ?? 0).toFixed(1)}d</span></span>,
-                  "Pairs",
+                  <span key="rc">{Number(v).toFixed(1)}d avg HL &nbsp;<span style={{ color: "#98a6b3" }}>{(props.payload?.count ?? 0)} pairs</span></span>,
+                  "Avg HL",
                 ]}
               />
-              <Bar dataKey="count" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+              <Bar dataKey="avgHL" radius={[3, 3, 0, 0]} isAnimationActive={false}>
                 {Object.entries(pairsByRegime)
                   .sort(([a], [b]) => Number(a) - Number(b))
                   .map(([regime], i) => (

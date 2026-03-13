@@ -14,12 +14,9 @@ A production-grade prototype that detects market regimes, discovers cointegrated
 - **Periodic pair re-selection**: pairs are dynamically re-evaluated every N trading days on a trailing window — stale pairs are closed, new cointegrated pairs added.
 - **Strategy**: rolling z-score pairs trading signals with entry/exit/stop rules, regime-adaptive sizing.
 - **Risk manager**: pre-trade risk gatekeeper with gross/net leverage caps, per-pair and per-ticker concentration limits, max open pairs, drawdown circuit breaker (halt + reduce zones), and regime-dependent leverage caps.
-- **Backtester**: event-driven engine with `Market/Signal/Order/Fill` events, simulated execution (half-spread + slippage + commission), portfolio accounting, and reporting.
 - **MLflow experiment tracking**: every backtest run is recorded with a timestamped run name, full config params, per-regime performance scalars, and artifacts (equity curve Parquet, trades CSV, selected pairs CSV, HMM JSON, plots). `PairRankingEngine` logs ranking summary metrics into any active MLflow run.
 - **Centralized config**: YAML / environment variable / CLI override config system.
 - **Structured logging**: timestamped, leveled logging with optional file output.
-- **Job queue stability**: thread-safe `BacktestJobQueue` with proper shutdown, race-condition fixes, and eviction logic.
-- **Comprehensive testing**: 87 unit tests covering core modules (job queue, portfolio, risk manager, regime detection).
 
 ## Disclaimer
 
@@ -233,37 +230,8 @@ The platform is architected as a multi-layer event-driven system with clear sepa
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Design Patterns
-
-**Event-Driven Architecture**: The backtest engine uses an event queue to decouple market data ingestion from strategy logic, execution, and portfolio accounting. Each component communicates via typed events (`MarketEvent`, `SignalEvent`, `OrderEvent`, `FillEvent`), enabling clean separation and testability.
-
-**Dependency Injection**: Core components (strategy, broker, portfolio, risk manager) are injected into the `BacktestEngine` constructor, allowing easy mocking and unit testing.
-
-**Strategy Pattern**: Regime detectors implement a common `BaseRegimeDetector` interface, allowing hot-swappable regime detection algorithms without changing downstream code.
-
-**Repository Pattern**: `DataClient` abstracts data fetching with caching, retry logic, and rate limiting. Clients are swappable (yfinance, FactSet, demo) via factory pattern.
-
-**Async Job Queue**: Dashboard operations run backtests via `BacktestJobQueue`, a thread-pool-backed async queue with job lifecycle management (pending → running → complete/failed), eviction policy, and graceful shutdown.
-
-**Guard Pattern**: `RiskManager` acts as a pre-trade gatekeeper, rejecting orders that would violate risk limits before they reach the broker.
 
 ### Data Flow
-
-**Backtest pipeline:**
-1. **Ingestion**: `DataClient` fetches OHLCV from yfinance, writes to disk via `pyarrow.parquet` (snappy-compressed).
-2. **Feature Engineering**: `FeatureStore` computes returns, realized volatility, momentum, z-scores; reads/writes Parquet natively with `pyarrow`.
-3. **Regime Detection**: `HMMRegimeDetector` fits on training data (walk-forward, optionally multivariate with macro tickers), predicts regime labels for backtest period.
-4. **Pair Selection**: `PairSelector` scans for cointegrated pairs via Engle-Granger test, filters by half-life.
-5. **Backtest Loop**: `BacktestEngine` iterates through bars:
-   - Emits `MarketEvent` with current prices.
-   - Strategy generates `SignalEvent` based on z-scores and regime.
-   - PositionSizer converts signals to `OrderEvent`s (two-leg pairs).
-   - `RiskManager` checks gross/net leverage, concentration, drawdown → approve/reject.
-   - `SimulatedBroker` executes approved orders with slippage/commission → `FillEvent`.
-   - `Portfolio` updates positions, cash, equity curve.
-   - End-of-day: mark-to-market, accrue short rebate, update risk state.
-6. **Periodic Re-selection**: Every N bars, strategy re-scans for new pairs, closes stale pairs.
-7. **Reporting + MLflow**: `Portfolio.performance_stats()` computes Sharpe, Sortino, Calmar, max drawdown, trade count. MLflow logs full config params, per-regime performance scalars, equity curve (Parquet), trades (CSV), selected pairs (CSV), HMM internals (JSON), and charts.
 
 **Discovery pipeline (dashboard):**
 1. `PairDiscoveryEngine` slices the price matrix per HMM regime and runs the full statistical test suite on each slice.
@@ -290,40 +258,6 @@ The platform is architected as a multi-layer event-driven system with clear sepa
 **Regime Adaptation**: Risk limits (leverage, max pairs, notional caps) adjust dynamically based on detected market regime. Drawdown circuit breaker halts new entries at -30%, scales down at -15%.
 
 **Performance**: Features cached to disk via native PyArrow Parquet (snappy compression). Arrow schema embedded in every file prevents silent dtype coercion on reload. Vectorized computation with pandas/numpy. Job parallelism via ThreadPoolExecutor (GIL-friendly: numpy/statsmodels release GIL in hot paths).
-
-### Design Decisions & Trade-offs
-
-**ThreadPoolExecutor vs ProcessPoolExecutor**: Chose threads over processes for job queue because:
-- Numpy/statsmodels release GIL during computation (no serialization overhead).
-- Shared memory access to price data and config (no IPC).
-- Faster startup and lower memory footprint.
-- Trade-off: Not CPU-bound enough to benefit from true parallelism.
-
-**Event-Driven vs Vectorized Backtest**: Event-driven architecture chosen for:
-- Realistic order-by-order execution modeling (fills depend on current portfolio state).
-- Natural composition of strategy components (regime detection, risk checks, execution).
-- Easy debugging (inspect queue state at any point).
-- Trade-off: Slower than vectorized (batched) backtests for simple strategies.
-
-**In-Memory Job Storage**: Jobs stored in-memory (not persisted) because:
-- Dashboard use case: short-lived interactive runs, not long-running production jobs.
-- Eviction policy prevents unbounded growth.
-- Trade-off: Jobs lost on server restart (acceptable for prototype).
-
-**Synchronous Risk Checks**: `RiskManager.check_order()` runs synchronously in event loop because:
-- Deterministic portfolio state at decision time (no async state mutation).
-- Low latency (microseconds per check).
-- Trade-off: Blocks event loop, but negligible for realistic bar counts (<10k bars).
-
-**Cointegration over Correlation**: Use cointegration for pair selection because:
-- Captures long-run equilibrium relationship (stationary spread).
-- Avoids spurious correlation from common trends.
-- Trade-off: More compute-intensive than correlation; requires sufficient history.
-
-**Daily Bars**: Backtest runs on daily OHLCV (not intraday) because:
-- Sufficient for statistical arbitrage at research/prototype stage.
-- Data availability (free via yfinance).
-- Trade-off: Cannot model intraday mean reversion or execution schedules (TWAP/VWAP).
 
 ### Technology Stack
 
@@ -392,26 +326,3 @@ source .venv/bin/activate
 - `tests/test_portfolio.py` — Portfolio accounting (fills, positions, leverage, short rebate, performance stats)
 - `tests/test_risk_manager.py` — RiskManager pre-trade checks (leverage caps, drawdown circuit breaker, regime overrides)
 - `tests/test_volatility_detector.py` — VolatilityRegimeDetector (fit, predict, state stats)
-
-## Current Roadmap
-
-- [x] Data ingestion (`yfinance` client with PyArrow/Parquet caching)
-- [x] Universe definition (200 tickers)
-- [x] Feature pipeline (native PyArrow Parquet I/O with embedded schema)
-- [x] Regime detection (HMM walk-forward, multivariate macro features)
-- [x] Per-regime pair discovery (`PairDiscoveryEngine`, dynamic overlap threshold)
-- [x] Relationship analysis (`RelationshipAnalyzer` — stable / unstable / regime-sensitive)
-- [x] Pair ranking engine (`PairRankingEngine` — score, stability_label, MLflow metrics)
-- [x] Pair selection (cointegration + half-life)
-- [x] Pairs trading strategy (z-score signals)
-- [x] Event-driven backtester with realistic costs
-- [x] Risk manager (leverage, drawdown, concentration limits)
-- [x] Periodic pair re-selection
-- [x] MLflow experiment tracking (full params, per-regime metrics, artifact store)
-- [x] Regime-Aware Pair Browser dashboard (React + Flask)
-- [x] Centralized config (YAML / env / CLI)
-- [x] Structured logging
-- [x] Unit tests (87 tests, 4 core modules)
-- [x] Process-pool stability fixes (job queue race conditions, shutdown support)
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Docker containerization

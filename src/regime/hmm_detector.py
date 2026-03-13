@@ -220,26 +220,31 @@ class HMMRegimeDetector(BaseRegimeDetector):
         if not avail:
             avail = [c for c in self.feature_cols if c in df.columns]
         clean_idx = df.dropna(subset=avail).index if avail else df.index
-
-        # --- Walk-forward labels: prefer them to avoid look-ahead bias ---
-        if self._walkforward_labels is not None and len(clean_idx) > 0:
-            wf_aligned = self._walkforward_labels.reindex(clean_idx, method="ffill")
-            wf_aligned = wf_aligned.bfill()  # fill start (before first WF prediction)
-            if wf_aligned.notna().all():
-                return wf_aligned.astype(int).rename("regime")
-
-        # --- Online (model-based) fallback ---
-        X          = self._prepare(df, fit_scaler=False)
+        # --- Online (model-based) prediction for dates with available features ---
+        X = self._prepare(df, fit_scaler=False)
         raw_states = self._model.predict(X)
-        mapped     = np.array([self._label_map[s] for s in raw_states])
-        idx        = df.dropna(subset=[c for c in (self._active_features or self.feature_cols) if c in df.columns]).index
-        online     = pd.Series(mapped, index=idx, name="regime", dtype=int)
+        mapped = np.array([self._label_map[s] for s in raw_states])
+        idx = df.dropna(subset=[c for c in (self._active_features or self.feature_cols) if c in df.columns]).index
+        online = pd.Series(mapped, index=idx, name="regime", dtype=float)
 
-        # Blend: use WF where available, online elsewhere
+        # --- Combine walk-forward labels (if present) and online predictions into a full-coverage series ---
+        combined = pd.Series(index=pd.DatetimeIndex(df.index), dtype=float)
+
+        # Fill with online predictions where available
+        combined.loc[online.index] = online
+
+        # Overlay walk-forward labels (they take priority where present)
         if self._walkforward_labels is not None:
-            common = online.index.intersection(self._walkforward_labels.index)
-            online.loc[common] = self._walkforward_labels.loc[common]
-        return online
+            wf = self._walkforward_labels.reindex(df.index)
+            combined.loc[wf.index] = wf
+
+        # Fill any remaining gaps by forward/backward filling nearest known label
+        combined = combined.sort_index()
+        combined = combined.ffill().bfill()
+
+        # Final sanity: if still any NA (very unlikely), fall back to zeros
+        combined = combined.fillna(0).astype(int).rename("regime")
+        return combined
 
     @property
     def n_regimes(self) -> int:
