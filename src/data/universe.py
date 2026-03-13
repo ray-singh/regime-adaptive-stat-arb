@@ -66,15 +66,19 @@ SECTOR_MAPPING = {
 def get_universe(name: str = "top200"):
     """
     Get a predefined stock universe.
-    
+
     Args:
-        name: Universe name ('top200', 'sp500', 'custom')
-        
+        name: Universe name ('top200', 'top100', 'sp500', 'custom')
+
     Returns:
         List of ticker symbols
     """
-    if name == "top200":
+    n = str(name).strip().lower()
+    if n in ("top200", "top-200"):
         return TOP_200_LIQUID_US_EQUITIES
+    if n in ("top100", "top-100"):
+        # Return the top 100 tickers from the TOP_200 list
+        return TOP_200_LIQUID_US_EQUITIES[:100]
     else:
         raise ValueError(f"Unknown universe: {name}")
 

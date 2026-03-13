@@ -426,6 +426,7 @@ export default function App() {
                 onChange={(e) => setControls((c) => ({ ...c, universe: e.target.value }))}
                 style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, color: "#e0eaf0", padding: "4px 8px" }}
               >
+                <option value="top100">Top 100 US equities</option>
                 <option value="top200">Top 200 US equities</option>
                 <option value="custom">Custom tickers</option>
               </select>

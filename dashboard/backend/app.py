@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from flask import Flask, jsonify, request
@@ -48,6 +52,115 @@ store = BacktestStore()
 discovery_store = DiscoveryStore()
 
 
+def _get_hmm_cache_key(tickers: list, start_date: str, end_date: Optional[str], n_states: int) -> str:
+    """Generate a cache key for HMM regime detection results."""
+    key_data = {
+        "tickers": sorted(tickers),
+        "start_date": start_date,
+        "end_date": end_date,
+        "n_states": n_states,
+        "feature_cols": ["avg_rv", "ret_dispersion", "index_momentum"],
+    }
+    key_str = json.dumps(key_data, sort_keys=True)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+
+def _get_pairs_cache_key(tickers: list, regime_series_hash: str, min_regime_bars: int) -> str:
+    """Generate a cache key for pair discovery results."""
+    key_data = {
+        "tickers": sorted(tickers),
+        "regime_series_hash": regime_series_hash,
+        "min_regime_bars": min_regime_bars,
+    }
+    key_str = json.dumps(key_data, sort_keys=True)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+
+def _get_ranking_cache_key(tickers: list, regime_series_hash: str, pair_summary_hash: str) -> str:
+    """Generate a cache key for pair ranking results."""
+    key_data = {
+        "tickers": sorted(tickers),
+        "regime_series_hash": regime_series_hash,
+        "pair_summary_hash": pair_summary_hash,
+    }
+    key_str = json.dumps(key_data, sort_keys=True)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+
+def _compute_data_hash(data: Any) -> str:
+    """Compute MD5 hash of serializable data (for cache invalidation)."""
+    try:
+        import pickle
+        return hashlib.md5(pickle.dumps(data)).hexdigest()
+    except Exception:
+        return ""
+
+
+def _load_cache_with_ttl(cache_key: str, cache_dir: Path, prefix: str, ttl_seconds: int = 604800) -> dict | None:
+    """Load cached data if it exists and is not stale (TTL in seconds; default 7 days)."""
+    cache_file = cache_dir / f"{prefix}_{cache_key}.pkl"
+    if cache_file.exists():
+        try:
+            import pickle
+            with open(cache_file, "rb") as f:
+                cached = pickle.load(f)
+            timestamp = cached.get("timestamp", 0)
+            age_seconds = time.time() - timestamp
+            if age_seconds < ttl_seconds:
+                logger.info(f"Cache hit for {prefix}_{cache_key} (age: {age_seconds:.1f}s, TTL: {ttl_seconds}s)")
+                return cached.get("data")
+            else:
+                logger.info(f"Cache expired for {prefix}_{cache_key} (age: {age_seconds:.1f}s, TTL: {ttl_seconds}s)")
+                cache_file.unlink(missing_ok=True)  # Remove stale cache
+        except Exception as e:
+            logger.warning(f"Failed to load cache {cache_file}: {e}")
+    return None
+
+
+def _save_cache_with_ttl(cache_key: str, cache_dir: Path, prefix: str, data: dict) -> None:
+    """Save data to cache with timestamp for TTL management."""
+    cache_file = cache_dir / f"{prefix}_{cache_key}.pkl"
+    try:
+        import pickle
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached_obj = {"timestamp": time.time(), "data": data}
+        with open(cache_file, "wb") as f:
+            pickle.dump(cached_obj, f)
+        logger.info(f"Saved cache to {cache_file}")
+    except Exception as e:
+        logger.warning(f"Failed to save cache {cache_file}: {e}")
+
+
+def _load_hmm_cache(cache_key: str, cache_dir: Path) -> dict | None:
+    """Load cached HMM regime_series and market_features if available (TTL: 7 days)."""
+    return _load_cache_with_ttl(cache_key, cache_dir, "hmm", ttl_seconds=604800)
+
+
+def _save_hmm_cache(cache_key: str, cache_dir: Path, data: dict) -> None:
+    """Save HMM regime_series and market_features to cache with timestamp."""
+    _save_cache_with_ttl(cache_key, cache_dir, "hmm", data)
+
+
+def _load_pairs_cache(cache_key: str, cache_dir: Path) -> dict | None:
+    """Load cached pair discovery results if available (TTL: 7 days)."""
+    return _load_cache_with_ttl(cache_key, cache_dir, "pairs", ttl_seconds=604800)
+
+
+def _save_pairs_cache(cache_key: str, cache_dir: Path, data: dict) -> None:
+    """Save pair discovery results to cache with timestamp."""
+    _save_cache_with_ttl(cache_key, cache_dir, "pairs", data)
+
+
+def _load_ranking_cache(cache_key: str, cache_dir: Path) -> dict | None:
+    """Load cached pair ranking results if available (TTL: 7 days)."""
+    return _load_cache_with_ttl(cache_key, cache_dir, "ranking", ttl_seconds=604800)
+
+
+def _save_ranking_cache(cache_key: str, cache_dir: Path, data: dict) -> None:
+    """Save pair ranking results to cache with timestamp."""
+    _save_cache_with_ttl(cache_key, cache_dir, "ranking", data)
+
+
 def _run_discovery_pipeline(payload: dict) -> dict:
     """Run the full pair-discovery pipeline and return all intermediate results."""
     import pandas as pd
@@ -69,37 +182,79 @@ def _run_discovery_pipeline(payload: dict) -> dict:
     if not tickers:
         raise ValueError("No tickers configured. Pass 'tickers' in the request body or set DataConfig.tickers.")
 
+    cache_dir = Path(ROOT_DIR) / "data" / "cache"
+    cache_key = _get_hmm_cache_key(tickers, start_date, end_date, n_states)
+    
     # 1. Fetch price matrix
     client = YFinanceClient(cache_dir=os.path.join(ROOT_DIR, "data", "cache"))
     price_matrix = client.get_price_matrix(tickers, start_date=start_date, end_date=end_date)
     if price_matrix.empty:
         raise ValueError("Price matrix is empty — check tickers and date range.")
 
-    # 2. Compute cross-asset market features
-    market_features = compute_market_features(price_matrix)
+    # 2–3. Check cache for market_features and regime_series (skip expensive HMM fitting if available)
+    cached = _load_hmm_cache(cache_key, cache_dir)
+    if cached is not None:
+        logger.info(f"Using cached HMM results for key {cache_key}")
+        market_features = cached["market_features"]
+        regime_series = cached["regime_series"]
+    else:
+        logger.info(f"Computing HMM regime detection for key {cache_key}")
+        # Compute cross-asset market features
+        market_features = compute_market_features(price_matrix)
 
-    # 3. Detect regimes using market features
-    hmm_feature_cols = ["avg_rv", "ret_dispersion", "index_momentum"]
-    detector = HMMRegimeDetector(n_states=n_states, feature_cols=hmm_feature_cols)
-    feature_df = market_features[hmm_feature_cols].dropna()
-    regime_series: pd.Series = detector.fit_predict_walkforward(
-        feature_df, min_train_years=min_train_years
-    )
-    regime_series = regime_series.dropna().astype(int)
+        # Detect regimes using market features
+        hmm_feature_cols = ["avg_rv", "ret_dispersion", "index_momentum"]
+        detector = HMMRegimeDetector(n_states=n_states, feature_cols=hmm_feature_cols)
+        feature_df = market_features[hmm_feature_cols].dropna()
+        regime_series: pd.Series = detector.fit_predict_walkforward(
+            feature_df, min_train_years=min_train_years
+        )
+        regime_series = regime_series.dropna().astype(int)
+        
+        # Save to cache
+        _save_hmm_cache(cache_key, cache_dir, {"market_features": market_features, "regime_series": regime_series})
 
-    # 4. Discover pairs per regime
-    engine = PairDiscoveryEngine(min_regime_bars=min_regime_bars)
-    pairs_df = engine.discover(price_matrix, regime_series, tickers=tickers)
+    # 4. Discover pairs per regime (with caching)
+    regime_series_hash = _compute_data_hash(regime_series)
+    pairs_cache_key = _get_pairs_cache_key(tickers, regime_series_hash, min_regime_bars)
+    
+    cached_pairs = _load_pairs_cache(pairs_cache_key, cache_dir)
+    if cached_pairs is not None:
+        logger.info(f"Using cached pairs discovery for key {pairs_cache_key}")
+        pairs_df = cached_pairs["pairs_df"]
+        pair_regime_stats = cached_pairs["pair_regime_stats"]
+        pair_summary = cached_pairs["pair_summary"]
+    else:
+        logger.info(f"Computing pair discovery for key {pairs_cache_key}")
+        engine = PairDiscoveryEngine(min_regime_bars=min_regime_bars)
+        pairs_df = engine.discover(price_matrix, regime_series, tickers=tickers)
 
-    # 5. Analyse relationships
-    pair_regime_stats: pd.DataFrame
-    pair_summary: pd.DataFrame
-    analyzer = RelationshipAnalyzer(price_matrix=price_matrix)
-    pair_regime_stats, pair_summary = analyzer.analyse(pairs_df, regime_series)
+        # 5. Analyse relationships
+        analyzer = RelationshipAnalyzer(price_matrix=price_matrix)
+        pair_regime_stats, pair_summary = analyzer.analyse(pairs_df, regime_series)
+        
+        # Save pairs to cache
+        _save_pairs_cache(pairs_cache_key, cache_dir, {
+            "pairs_df": pairs_df,
+            "pair_regime_stats": pair_regime_stats,
+            "pair_summary": pair_summary,
+        })
 
-    # 6. Rank pairs
-    ranker = PairRankingEngine()
-    ranked = ranker.rank(pair_summary) if not pair_summary.empty else pair_summary
+    # 6. Rank pairs (with caching)
+    pair_summary_hash = _compute_data_hash(pair_summary)
+    ranking_cache_key = _get_ranking_cache_key(tickers, regime_series_hash, pair_summary_hash)
+    
+    cached_ranking = _load_ranking_cache(ranking_cache_key, cache_dir)
+    if cached_ranking is not None:
+        logger.info(f"Using cached pair ranking for key {ranking_cache_key}")
+        ranked = cached_ranking["ranked"]
+    else:
+        logger.info(f"Computing pair ranking for key {ranking_cache_key}")
+        ranker = PairRankingEngine()
+        ranked = ranker.rank(pair_summary) if not pair_summary.empty else pair_summary
+        
+        # Save ranking to cache
+        _save_ranking_cache(ranking_cache_key, cache_dir, {"ranked": ranked})
 
     return {
         "pairs_df": pairs_df,
@@ -229,6 +384,8 @@ def _build_config_from_payload(payload: dict[str, Any]) -> tuple[PlatformConfig,
             try:
                 if u.lower() in ("top200", "top-200", "all"):
                     cfg.data.tickers = get_universe("top200")
+                elif u.lower() in ("top100", "top-100"):
+                    cfg.data.tickers = get_universe("top100")
                 else:
                     # Try case-insensitive sector match
                     match = None
