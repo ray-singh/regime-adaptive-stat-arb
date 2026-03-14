@@ -197,8 +197,22 @@ class HMMRegimeDetector(BaseRegimeDetector):
         self._model = fallback
         self._build_label_map()
 
+        # Use the fitted fallback model to predict regimes for any dates
+        # that weren't covered by the walk-forward chunks (including early history).
+        if not basic_clean.empty:
+            X_full = basic_clean[basic_avail].values.astype(float)
+            X_full_sc = self._scaler.transform(X_full)
+            raw_full = fallback.predict(X_full_sc)
+            mapped_full = [self._label_map[s] for s in raw_full]
+            # fill any missing dates in all_labels with mapped_full predictions
+            for date, lbl in zip(basic_clean.index, mapped_full):
+                if date not in all_labels:
+                    all_labels[date] = int(lbl)
+
         labels_series = pd.Series(all_labels, name="regime", dtype=int)
         labels_series.index = pd.DatetimeIndex(labels_series.index)
+        # Reindex to full df index so predict() can overlay directly
+        labels_series = labels_series.reindex(pd.DatetimeIndex(df.index))
         self._walkforward_labels = labels_series
         logger.info(
             "Walk-forward complete: %d regime labels generated over %d total bars, features=%s",

@@ -6,16 +6,30 @@ WORKDIR /app
 # Install system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
+    gfortran \
+    libopenblas-dev \
+    liblapack-dev \
+    libssl-dev \
+    libffi-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    rustc \
+    cargo \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy project requirements (top-level) so core deps like pandas are installed
-COPY requirements.txt ./requirements.txt
+# Copy backend runtime requirements only (avoid dev/test/CLI deps in image)
+COPY dashboard/backend/requirements.runtime.txt ./requirements.runtime.txt
 
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir gunicorn
+# Copy repository files early so any build-time packaging that reads repo files
+# (e.g. README.md) won't fail while building wheels.
+COPY . /app
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --prefer-binary -r requirements.runtime.txt
 
 # Copy the repository into the image (backend expects repo root relative imports)
-COPY . /app
 
 EXPOSE 5001
 

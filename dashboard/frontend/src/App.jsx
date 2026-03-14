@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
   Area,
   AreaChart,
@@ -65,7 +65,12 @@ function RegimeLegend() {
 function NetworkGraph({ nodes, edges, onSelectPair }) {
   const W = 700, H = 480, CX = W / 2, CY = H / 2;
   const R = Math.min(CX, CY) - 60;
-
+  // Interactive pan/zoom state
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const [panning, setPanning] = useState(false);
+  const panLast = useRef(null);
   // Place nodes on circle
   const positions = useMemo(() => {
     const pos = {};
@@ -79,9 +84,49 @@ function NetworkGraph({ nodes, edges, onSelectPair }) {
   // Colour edges by weight
   const maxWeight = useMemo(() => Math.max(...edges.map((e) => e.weight), 0.01), [edges]);
 
+  // Wheel zoom handler (zoom toward cursor)
+  const onWheel = (e) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const newScale = Math.max(0.2, Math.min(6, scale * factor));
+    // adjust translation so zoom centers on cursor
+    const dx = cx - (cx - tx) * (newScale / scale);
+    const dy = cy - (cy - ty) * (newScale / scale);
+    setScale(newScale);
+    setTx(dx);
+    setTy(dy);
+  };
+
+  const onMouseDown = (e) => {
+    setPanning(true);
+    panLast.current = { x: e.clientX, y: e.clientY };
+  };
+  const onMouseMove = (e) => {
+    if (!panning || !panLast.current) return;
+    const dx = e.clientX - panLast.current.x;
+    const dy = e.clientY - panLast.current.y;
+    panLast.current = { x: e.clientX, y: e.clientY };
+    setTx((t) => t + dx);
+    setTy((t) => t + dy);
+  };
+  const onMouseUp = () => { setPanning(false); panLast.current = null; };
+
   return (
-    <div style={{ overflowX: "auto" }}>
-      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ maxWidth: W, display: "block", margin: "0 auto" }}>
+    <div style={{ overflow: "hidden", touchAction: "none" }}>
+      <svg
+        width="100%"
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ maxWidth: W, display: "block", margin: "0 auto", cursor: panning ? 'grabbing' : 'grab' }}
+        onWheel={onWheel}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+      >
+        <g transform={`translate(${tx},${ty}) scale(${scale})`}>
         {edges.map((e, i) => {
           const s = positions[e.source];
           const t = positions[e.target];
@@ -101,6 +146,19 @@ function NetworkGraph({ nodes, edges, onSelectPair }) {
             </line>
           );
         })}
+        {/* Edge labels at midpoints */}
+        {edges.map((e, i) => {
+          const s = positions[e.source];
+          const t = positions[e.target];
+          if (!s || !t) return null;
+          const mx = (s.x + t.x) / 2;
+          const my = (s.y + t.y) / 2;
+          return (
+            <text key={`lbl-${i}`} x={mx} y={my} fontSize={10} fill="#c8dde8" textAnchor="middle" pointerEvents="none">
+              {Number(e.corr).toFixed(2)}
+            </text>
+          );
+        })}
         {nodes.map((n) => {
           const p = positions[n.id];
           if (!p) return null;
@@ -115,10 +173,12 @@ function NetworkGraph({ nodes, edges, onSelectPair }) {
                 fontSize={10}
                 fill="#c8dde8"
                 fontWeight={600}
+                pointerEvents="none"
               >{n.label}</text>
             </g>
           );
         })}
+        </g>
       </svg>
       <p className="chart-subtitle" style={{ textAlign: "center", marginTop: 6 }}>
         Node size = degree (# of pair relationships). Click an edge to open Pair Explorer.
