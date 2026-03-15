@@ -30,7 +30,7 @@ class HMMRegimeDetector(BaseRegimeDetector):
     Parameters
     ----------
     n_states : int
-        Number of hidden states (default 3).
+        Number of hidden states (default 4).
     feature_cols : list[str]
         Columns used for fitting (must exist after featurize). Default uses
         logret + rv_20. Pass extra cols like mom_20 for richer models.
@@ -41,7 +41,7 @@ class HMMRegimeDetector(BaseRegimeDetector):
 
     def __init__(
         self,
-        n_states: int = 3,
+        n_states: int = 4,
         feature_cols: Optional[List[str]] = None,
         n_iter: int = 1000,
         random_state: int = 42,

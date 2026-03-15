@@ -35,7 +35,7 @@ class DataConfig:
 @dataclass
 class RegimeConfig:
     """Regime detection settings."""
-    n_states: int = 3
+    n_states: int = 4
     regime_ticker: str = "VOO"
     # Walk-forward training (guide §3) — prevents look-ahead bias
     use_walkforward: bool = True

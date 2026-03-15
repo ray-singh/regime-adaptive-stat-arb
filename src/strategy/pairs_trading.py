@@ -19,8 +19,7 @@ from itertools import combinations
 from typing import List, Optional, Tuple, Dict
 import logging
 import warnings
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 import atexit
 
 from statsmodels.tsa.stattools import coint
@@ -37,6 +36,11 @@ logger = logging.getLogger(__name__)
 def _test_pair_worker(args: tuple):
     """Run Engle-Granger test + hedge-ratio + half-life for one pair.
     Returns a result dict on success, or None if the pair is rejected."""
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
     t1, t2, s1_vals, s2_vals, pvalue_threshold, min_hl, max_hl = args
     import warnings
     import numpy as np
@@ -89,6 +93,11 @@ def _test_pairs_batch_worker(batch: list):
     """Worker that receives a list of args tuples and returns list of results.
     This reduces IPC overhead by batching several pair tests per process.
     """
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
     results = []
     for args in batch:
         try:
@@ -101,12 +110,12 @@ def _test_pairs_batch_worker(batch: list):
     return results
 
 
-# Module-level executor reused across calls to avoid repeated process spawn
-_GLOBAL_EXECUTOR: ProcessPoolExecutor | None = None
+# Module-level executor reused across calls to avoid repeated worker setup
+_GLOBAL_EXECUTOR: ThreadPoolExecutor | None = None
 _GLOBAL_EXECUTOR_WORKERS: int | None = None
 
 
-def _get_executor(max_workers: int) -> ProcessPoolExecutor:
+def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     global _GLOBAL_EXECUTOR, _GLOBAL_EXECUTOR_WORKERS
     # Recreate pool if worker count changed to avoid stale sizing.
     if _GLOBAL_EXECUTOR is not None and _GLOBAL_EXECUTOR_WORKERS != max_workers:
@@ -115,22 +124,20 @@ def _get_executor(max_workers: int) -> ProcessPoolExecutor:
         _GLOBAL_EXECUTOR_WORKERS = None
 
     if _GLOBAL_EXECUTOR is None:
-        # Try to prefer 'fork' start method on platforms that support it to
-        # reduce pickling overhead; fall back to default when unavailable.
-        try:
-            ctx = multiprocessing.get_context("fork")
-        except Exception:
-            ctx = None
-
-        if ctx is not None:
-            _GLOBAL_EXECUTOR = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)  # type: ignore[arg-type]
-        else:
-            _GLOBAL_EXECUTOR = ProcessPoolExecutor(max_workers=max_workers)
+        _GLOBAL_EXECUTOR = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="pairs-worker")
         _GLOBAL_EXECUTOR_WORKERS = max_workers
 
         # Ensure executor is cleaned up on interpreter exit
         atexit.register(lambda: _GLOBAL_EXECUTOR.shutdown(wait=False) if _GLOBAL_EXECUTOR is not None else None)
     return _GLOBAL_EXECUTOR
+
+
+def shutdown_executor(wait: bool = True) -> None:
+    global _GLOBAL_EXECUTOR, _GLOBAL_EXECUTOR_WORKERS
+    if _GLOBAL_EXECUTOR is not None:
+        _GLOBAL_EXECUTOR.shutdown(wait=wait)
+        _GLOBAL_EXECUTOR = None
+        _GLOBAL_EXECUTOR_WORKERS = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,12 +195,11 @@ class PairsSelector:
         combos = list(combinations(tickers, 2))
         logger.info("Testing %d raw pairs for cointegration...", len(combos))
 
-        # ── Fast pre-filter: correlation ≥ 0.7 required (much cheaper than coint)
-        corr = price_df[tickers].corr()
-        combos = [
-            (t1, t2) for (t1, t2) in combos
-            if abs(corr.at[t1, t2]) >= 0.70
-        ]
+        # ── Fast pre-filter: correlation ≥ 0.7 required (vectorized)
+        corr_matrix = price_df[tickers].pct_change().corr().values
+        tickers_arr = np.array(tickers)
+        i_idx, j_idx = np.where(np.triu(np.abs(corr_matrix) >= 0.70, k=1))
+        combos = list(zip(tickers_arr[i_idx].tolist(), tickers_arr[j_idx].tolist()))
         logger.info("  After |r|≥0.70 pre-filter: %d pairs remain", len(combos))
 
         # ── Build argument list (convert to numpy arrays once, outside workers)
@@ -220,15 +226,20 @@ class PairsSelector:
                 self.max_half_life,
             ))
 
-        # ── Parallel execution via reusable ProcessPoolExecutor with batching
-        # Use at most 4 workers (avoid over-subscribing on small universes)
-        n_workers = max(1, min(os.cpu_count() or 4, 4, (len(args_list) + 3) // 4))
+        # ── Parallel execution via reusable ThreadPoolExecutor with batching
+        n_cpus = (
+            len(os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity")
+            else (os.cpu_count() or 4)
+        )
+        n_workers = max(1, min(n_cpus, 6))
         pairs_result: list = []
         if not args_list:
             return pd.DataFrame(pairs_result)
 
-        # For smaller candidate sets, process start + IPC overhead dominates.
-        if len(args_list) < sequential_threshold:
+        # Force sequential path when sequential_threshold <= 0.
+        force_sequential = sequential_threshold <= 0
+        if force_sequential or len(args_list) < sequential_threshold:
             for a in args_list:
                 r = _test_pair_worker(a)
                 if r is not None:

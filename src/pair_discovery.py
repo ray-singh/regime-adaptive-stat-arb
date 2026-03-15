@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 from typing import Optional, List
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -119,9 +121,7 @@ class PairDiscoveryEngine:
         distinct_regimes = sorted(regimes.dropna().unique())
         logger.info("Running pair discovery across %d regimes: %s", len(distinct_regimes), distinct_regimes)
 
-        all_results: list[pd.DataFrame] = []
-
-        for regime_id in distinct_regimes:
+        def _discover_regime(regime_id: int) -> pd.DataFrame | None:
             regime_dates = regimes[regimes == regime_id].index
             regime_prices = prices.loc[regime_dates].dropna(axis=1, how="all")
 
@@ -131,7 +131,7 @@ class PairDiscoveryEngine:
                     "Regime %s: only %d bars (< %d required) — skipping.",
                     regime_id, n_bars, self.min_regime_bars,
                 )
-                continue
+                return None
 
             logger.info("Regime %s: %d bars, testing pairs...", regime_id, n_bars)
 
@@ -140,11 +140,12 @@ class PairDiscoveryEngine:
                 tickers=list(regime_prices.columns),
                 max_pairs=self.max_pairs_per_regime,
                 verbose=False,
+                sequential_threshold=0,
             )
 
             if pairs_df.empty:
                 logger.info("Regime %s: no cointegrated pairs found.", regime_id)
-                continue
+                return None
 
             # Add rolling pairwise correlation for each found pair
             pairs_df["corr"] = pairs_df.apply(
@@ -153,7 +154,18 @@ class PairDiscoveryEngine:
             )
 
             pairs_df["regime"] = regime_id
-            all_results.append(pairs_df)
+            return pairs_df
+
+        n_cpus = (
+            len(os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity")
+            else (os.cpu_count() or 4)
+        )
+        regime_workers = max(1, min(len(distinct_regimes), n_cpus))
+        with ThreadPoolExecutor(max_workers=regime_workers, thread_name_prefix="regime-discovery") as ex:
+            discovered = list(ex.map(_discover_regime, distinct_regimes))
+
+        all_results = [df for df in discovered if df is not None and not df.empty]
 
         if not all_results:
             logger.warning("No pairs found across any regime.")
@@ -191,6 +203,7 @@ class PairDiscoveryEngine:
             tickers=tickers,
             max_pairs=self.max_pairs_per_regime,
             verbose=False,
+            sequential_threshold=0,
         )
         if pairs_df.empty:
             return pd.DataFrame()

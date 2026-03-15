@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import os
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import hashlib
 import json
-import os
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -50,6 +57,28 @@ class DiscoveryStore:
 
 store = BacktestStore()
 discovery_store = DiscoveryStore()
+
+
+@lru_cache(maxsize=8)
+def _get_cached_price_matrix(tickers_key: str, start_date: str, end_date: Optional[str]) -> Any:
+    from data.yfinance_client import YFinanceClient
+
+    tickers = [t for t in tickers_key.split(",") if t]
+    client = YFinanceClient(cache_dir=os.path.join(ROOT_DIR, "data", "cache"))
+    return client.get_price_matrix(tickers, start_date=start_date, end_date=end_date)
+
+
+@lru_cache(maxsize=8)
+def _get_cached_market_features(
+    tickers_key: str,
+    start_date: str,
+    end_date: Optional[str],
+    last_date: str,
+) -> Any:
+    from features.featurize import compute_market_features
+
+    price_matrix = _get_cached_price_matrix(tickers_key, start_date, end_date)
+    return compute_market_features(price_matrix)
 
 
 def _get_hmm_cache_key(tickers: list, start_date: str, end_date: Optional[str], n_states: int) -> str:
@@ -164,8 +193,6 @@ def _save_ranking_cache(cache_key: str, cache_dir: Path, data: dict) -> None:
 def _run_discovery_pipeline(payload: dict) -> dict:
     """Run the full pair-discovery pipeline and return all intermediate results."""
     import pandas as pd
-    from data.yfinance_client import YFinanceClient
-    from features.featurize import compute_market_features
     from regime.hmm_detector import HMMRegimeDetector
     from pair_discovery import PairDiscoveryEngine
     from relationship_analysis import RelationshipAnalyzer
@@ -175,7 +202,7 @@ def _run_discovery_pipeline(payload: dict) -> dict:
     tickers: list = payload.get("tickers") or getattr(cfg.data, "tickers", []) or []
     start_date: str = payload.get("startDate") or getattr(cfg.data, "start_date", "2018-01-01") or "2018-01-01"
     end_date: Optional[str] = payload.get("endDate") or getattr(cfg.data, "end_date", None)
-    n_states: int = int(payload.get("nStates") or getattr(cfg.regime, "n_states", 3) or 3)
+    n_states: int = int(payload.get("nStates") or getattr(cfg.regime, "n_states", 4) or 4)
     min_train_years: int = int(payload.get("minTrainYears") or 2)
     min_regime_bars: int = int(payload.get("minRegimeBars") or 30)
 
@@ -183,13 +210,15 @@ def _run_discovery_pipeline(payload: dict) -> dict:
         raise ValueError("No tickers configured. Pass 'tickers' in the request body or set DataConfig.tickers.")
 
     cache_dir = Path(ROOT_DIR) / "data" / "cache"
-    cache_key = _get_hmm_cache_key(tickers, start_date, end_date, n_states)
-    
-    # 1. Fetch price matrix
-    client = YFinanceClient(cache_dir=os.path.join(ROOT_DIR, "data", "cache"))
-    price_matrix = client.get_price_matrix(tickers, start_date=start_date, end_date=end_date)
+
+    # 1. Fetch price matrix (in-process LRU + disk cache)
+    tickers_key = ",".join(sorted(str(t) for t in tickers))
+    price_matrix = _get_cached_price_matrix(tickers_key, start_date, end_date).copy()
     if price_matrix.empty:
         raise ValueError("Price matrix is empty — check tickers and date range.")
+
+    last_date = str(price_matrix.index[-1].date())
+    cache_key = _get_hmm_cache_key(tickers, start_date, last_date, n_states)
 
     # 2–3. Check cache for market_features and regime_series (skip expensive HMM fitting if available)
     cached = _load_hmm_cache(cache_key, cache_dir)
@@ -199,8 +228,13 @@ def _run_discovery_pipeline(payload: dict) -> dict:
         regime_series = cached["regime_series"]
     else:
         logger.info(f"Computing HMM regime detection for key {cache_key}")
-        # Compute cross-asset market features
-        market_features = compute_market_features(price_matrix)
+        # Compute cross-asset market features (in-process cache)
+        market_features = _get_cached_market_features(
+            tickers_key=tickers_key,
+            start_date=start_date,
+            end_date=end_date,
+            last_date=last_date,
+        ).copy()
 
         # Detect regimes using market features
         hmm_feature_cols = ["avg_rv", "ret_dispersion", "index_momentum"]
@@ -779,7 +813,7 @@ def create_app() -> Flask:
           - tickers : list[str]   (overrides config default)
           - startDate : str       (YYYY-MM-DD)
           - endDate   : str       (YYYY-MM-DD, optional)
-          - nStates   : int       (number of HMM regimes, default 3)
+          - nStates   : int       (number of HMM regimes, default 4)
         """
         payload = request.get_json(silent=True) or {}
         with discovery_store.lock:

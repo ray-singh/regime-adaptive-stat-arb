@@ -28,7 +28,7 @@ data:
   cache_dir: "data/cache"
 
 regime:
-  n_states: 3
+  n_states: 4
   regime_ticker: "AAPL"
 
 pairs:

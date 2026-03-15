@@ -18,7 +18,7 @@ export const DEFAULT_CONTROLS = {
   entryZ: 2.0,
   exitZ: 0.5,
   stopZ: 3.5,
-  nStates: 3,
+  nStates: 4,
   // Risk manager regime maps
   regimeLeverageCaps:     { 0: 4.0,  1: 3.0,  2: 2.0,  3: 1.0  },
   regimeMaxOpenPairs:     { 0: 10,   1: 8,    2: 5,    3: 2    },
@@ -40,7 +40,7 @@ export const SCENARIO_PRESETS = [
       "Raises the entry bar, tightens stop losses, caps the number of pairs at 5, and layers in VIX + gold macro signals so the regime model 'knows' about fear. A good answer to: what happens when markets break?",
     color: "#ff6b6b",
     controls: {
-      entryZ: 2.5, exitZ: 0.8, stopZ: 3.0, nStates: 3, maxPairs: 5, useRisk: true, useMacroTickers: true,
+      entryZ: 2.5, exitZ: 0.8, stopZ: 3.0, nStates: 4, maxPairs: 5, useRisk: true, useMacroTickers: true,
       regimeEntryZ: { 0: 2.0, 1: 2.5, 2: 3.0, 3: 5.0 },
       regimeExitZ:  { 0: 0.5, 1: 0.8, 2: 1.0, 3: 1.5 },
       regimePositionScale: { 0: 0.8, 1: 0.6, 2: 0.3, 3: 0.0 },
@@ -55,7 +55,7 @@ export const SCENARIO_PRESETS = [
       "Enables quarterly pair re-selection and VIX+gold enrichment so the strategy automatically rebuilds its pair universe each time the regime model detects a structural shift. Best for understanding the core adaptive mechanism.",
     color: "#ffd166",
     controls: {
-      nStates: 3, useMacroTickers: true, reselectionEnabled: true, reselectionInterval: 63, maxPairs: 8, useRisk: true,
+      nStates: 4, useMacroTickers: true, reselectionEnabled: true, reselectionInterval: 63, maxPairs: 8, useRisk: true,
       regimeEntryZ: { 0: 1.5, 1: 2.0, 2: 2.5, 3: 4.0 },
       regimeExitZ:  { 0: 0.3, 1: 0.5, 2: 0.8, 3: 1.0 },
       regimePositionScale: { 0: 1.0, 1: 0.75, 2: 0.5, 3: 0.1 },
