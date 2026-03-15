@@ -4,7 +4,7 @@ Fast, interpretable detector based on rolling realized volatility quantiles.
 Uses rv_20 by default and splits into n_states buckets by percentile thresholds.
 
     n_states=2: low / high vol
-    n_states=3: low / mid / high vol  (default)
+    n_states=4: low / mid / high / crisis (default)
     n_states=4: low / mid / high / crisis
 """
 
@@ -29,7 +29,7 @@ class VolatilityRegimeDetector(BaseRegimeDetector):
         Column containing realized vol (default 'rv_20').
     """
 
-    def __init__(self, n_states: int = 3, rv_col: str = "rv_20"):
+    def __init__(self, n_states: int = 4, rv_col: str = "rv_20"):
         if not 2 <= n_states <= 4:
             raise ValueError("n_states must be 2, 3, or 4")
         self.n_states = n_states

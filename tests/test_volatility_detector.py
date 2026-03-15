@@ -26,7 +26,7 @@ def _make_df(n: int = 500, seed: int = 0) -> pd.DataFrame:
 class TestConstruction:
     def test_default_is_3_states(self):
         d = VolatilityRegimeDetector()
-        assert d.n_regimes == 3
+        assert d.n_regimes == 4
 
     @pytest.mark.parametrize("n", [2, 3, 4])
     def test_valid_n_states(self, n):
