@@ -210,7 +210,12 @@ export default function App() {
   const [controls,         setControls]         = useState(() => {
     try {
       const saved = window.localStorage.getItem("dashboard_controls");
-      return saved ? JSON.parse(saved) : DEFAULT_CONTROLS;
+      if (!saved) return DEFAULT_CONTROLS;
+      const parsed = JSON.parse(saved);
+      const merged = { ...DEFAULT_CONTROLS, ...parsed };
+      // Keep discovery in 4-state mode so crisis (regime 3) is available.
+      merged.nStates = Math.max(4, Number(merged.nStates) || 4);
+      return merged;
     } catch { return DEFAULT_CONTROLS; }
   });
 
@@ -246,7 +251,8 @@ export default function App() {
 
       const res = await runDiscovery({
         tickers: tickersPayload,
-        nStates: Number(controls.nStates) || 3,
+        nStates: Math.max(4, Number(controls.nStates) || 4),
+        minRegimeBars: Number(controls.minRegimeBars) || 10,
       });
       if (!res.ok) { setDiscoveryError(res.error || "Discovery failed"); setDiscoveryRunning(false); return; }
       // Poll until done
@@ -791,11 +797,12 @@ export default function App() {
                       bands.push({ start: spreadStart, end: firstRegimeDate, regime: null });
                     }
 
-                    let cur = pairSpread.regime[0];
+                    let cur = { ...pairSpread.regime[0], regime: Number(pairSpread.regime[0].regime) };
                     for (let i = 1; i < pairSpread.regime.length; i++) {
-                      if (pairSpread.regime[i].regime !== cur.regime) {
+                      const nextRegime = Number(pairSpread.regime[i].regime);
+                      if (nextRegime !== cur.regime) {
                         bands.push({ start: cur.date, end: pairSpread.regime[i - 1].date, regime: cur.regime });
-                        cur = pairSpread.regime[i];
+                        cur = { ...pairSpread.regime[i], regime: nextRegime };
                       }
                     }
                     bands.push({ start: cur.date, end: pairSpread.regime[pairSpread.regime.length - 1].date, regime: cur.regime });

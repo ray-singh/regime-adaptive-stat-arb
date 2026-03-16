@@ -103,6 +103,10 @@ class HMMRegimeDetector(BaseRegimeDetector):
         (logret, rv_20, mom_20) so that online inference in the backtest
         (which has no macro/volume data) still works safely.
 
+        After assembling all walk-forward + fallback labels, labels are
+        re-binned once using global realized-volatility quantiles so regime
+        integers are consistent across all chunks.
+
         Stores computed labels in ``self._walkforward_labels`` and returns them.
         """
         BASIC_COLS = ["logret", "rv_20", "mom_20"]
@@ -213,6 +217,26 @@ class HMMRegimeDetector(BaseRegimeDetector):
         labels_series.index = pd.DatetimeIndex(labels_series.index)
         # Reindex to full df index so predict() can overlay directly
         labels_series = labels_series.reindex(pd.DatetimeIndex(df.index))
+
+        rv_col = next((c for c in ["avg_rv", "rv_20"] if c in df.columns), None)
+        if rv_col is not None:
+            rv_aligned = df[rv_col].reindex(labels_series.index)
+            valid_mask = labels_series.notna() & rv_aligned.notna()
+            if valid_mask.any():
+                rebinned = self._relabel_by_global_rv_quantiles(rv_aligned[valid_mask])
+                labels_series.loc[rebinned.index] = rebinned.astype(float)
+                logger.info(
+                    "Applied global RV relabeling on walk-forward labels using '%s' (%d points)",
+                    rv_col,
+                    int(valid_mask.sum()),
+                )
+        else:
+            logger.warning(
+                "No realized-vol column found for global walk-forward relabeling; "
+                "available columns=%s",
+                list(df.columns),
+            )
+
         self._walkforward_labels = labels_series
         logger.info(
             "Walk-forward complete: %d regime labels generated over %d total bars, features=%s",
@@ -344,3 +368,31 @@ class HMMRegimeDetector(BaseRegimeDetector):
         means_scaled = self._model.means_[:, rv_idx]
         order = np.argsort(means_scaled)   # ascending vol -> state 0 = lowest
         self._label_map = {raw: sorted_idx for sorted_idx, raw in enumerate(order)}
+
+    def _relabel_by_global_rv_quantiles(self, rv_series: pd.Series) -> pd.Series:
+        """Map RV values to stable regime integers via global quantiles.
+
+        For 4-state models, use a dedicated crisis bucket at top 10% RV:
+            [0, 33%) -> 0, [33%, 66%) -> 1, [66%, 90%) -> 2, [90%, 100%] -> 3
+        For other n_states, use evenly spaced quantile bins.
+        """
+        rv = rv_series.dropna().astype(float)
+        if rv.empty:
+            return pd.Series(dtype=int)
+
+        if self.n_states == 4:
+            # Use percentile ranks (method='first') to avoid tied-quantile
+            # threshold collapse when RV has repeated values.
+            pct = rv.rank(method="first", pct=True)
+            labels = np.where(
+                pct.values < 0.33,
+                0,
+                np.where(pct.values < 0.66, 1, np.where(pct.values < 0.90, 2, 3)),
+            ).astype(int)
+            return pd.Series(labels, index=rv.index, name="regime")
+        else:
+            qs = np.linspace(0, 1, self.n_states + 1)[1:-1]
+            thresholds = rv.quantile(qs).values
+
+        labels = np.digitize(rv.values, thresholds).astype(int)
+        return pd.Series(labels, index=rv.index, name="regime")

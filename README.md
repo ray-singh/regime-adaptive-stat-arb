@@ -31,6 +31,42 @@ A quantitative research system that combines unsupervised regime detection with 
 
 ---
 
+## Frontend Metric Definitions
+
+The dashboard numbers come from `PairDiscoveryEngine` → `RelationshipAnalyzer` → `PairRankingEngine`.
+
+### Top Pairs Panel
+
+| Field | Meaning | How it is calculated |
+|---|---|---|
+| **Score** | Overall pair “interestingness” (higher is better). | `score = 0.6 * regime_sensitivity + 0.4 * mean_reversion_str` (weights are configurable in `PairRankingEngine`). |
+| **Stability** | How consistently a pair is cointegrated across active regimes. | `stability_score = n_stable / n_regimes_active`, where a regime is stable when `coint_pvalue < 0.05`. Display label: `low` (≤0.33), `medium` (≤0.66), `high` (>0.66). |
+| **Regime Sensitive** | Whether pair correlation changes materially across regimes. | `True` if `std(corr across regimes) > 0.15`; else `False`. |
+| **Best Half-Life (d)** | Fastest observed mean-reversion speed for the pair. | Minimum `half_life_days` over all regimes where the pair was found. |
+| **Best p-value** | Strongest cointegration evidence for the pair. | Minimum Engle-Granger p-value across all regimes. |
+| **Active Regimes** | Regimes where the pair appears in discovery output. | Count/list of regime IDs where that pair passed discovery filters. |
+
+### Regime Comparison View
+
+| Field | Meaning | How it is calculated |
+|---|---|---|
+| **p-value** | Cointegration strength for that pair in that regime (lower is stronger). | Engle-Granger p-value on the regime-specific price slice. |
+| **Half-Life** | Mean-reversion speed in that regime. | OU/AR(1)-derived half-life from spread dynamics for that regime. |
+| **Corr** | Return co-movement in that regime. | Pearson correlation of daily returns for `(asset_A, asset_B)` within that regime window. |
+| **Avg HL** (bar chart) | Typical reversion speed of discovered pairs in each regime. | Mean of `half_life_days` over pairs shown for that regime. |
+
+### Pair Explorer
+
+| Field | Meaning | How it is calculated |
+|---|---|---|
+| **Spread** | Raw pair spread series used for trading logic. | `spread_t = price_A_t - hedge_ratio * price_B_t`. |
+| **Z-Score** | Standardized spread level used for entry/exit thresholds. | `z_t = (spread_t - mean(spread)) / std(spread)`. |
+| **Regime Bands** | Background color for detected market regime over time. | Regime series aligned to spread dates using forward fill, then segmented at regime transitions. |
+
+**Important:** If no pairs are discovered (for example, strict cointegration filters in sparse regimes), the Pair Explorer has no pair rows to open, so you may not see crisis periods there even when the HMM itself detects regime `3`.
+
+---
+
 ## Architecture
 
 ```
@@ -49,7 +85,7 @@ A quantitative research system that combines unsupervised regime detection with 
          └───────────────┬───────────────┘
                          │
     ┌────────────────────▼────────────────────┐
-    │          Event-Driven Backtest Engine    │
+    │           Backtest Engine               │
     │                                         │
     │  MarketEvent → Strategy → SignalEvent   │
     │      → RiskManager (pre-trade)          │
@@ -148,5 +184,3 @@ Or with Docker:
 ```bash
 docker compose up --build
 ```
-
----

@@ -14,6 +14,8 @@ export const DEFAULT_CONTROLS = {
   reselectionEnabled: true,
   useRisk: true,
   useMacroTickers: false,
+  // Minimum number of bars required to run discovery in a regime
+  minRegimeBars: 10,
   universe: "top200",
   entryZ: 2.0,
   exitZ: 0.5,
