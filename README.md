@@ -184,3 +184,46 @@ Or with Docker:
 ```bash
 docker compose up --build
 ```
+
+---
+
+## Fly.io Backend Deployment
+
+This repository is configured for backend-only Fly deployment.
+
+### Deploy from source (recommended)
+
+`fly.toml` is pinned to `dashboard/backend/Dockerfile`, so Fly runs Gunicorn on port `5001`.
+
+```bash
+flyctl auth whoami
+flyctl deploy --remote-only
+```
+
+If remote builder leases are stuck, bypass remote builder state:
+
+```bash
+flyctl deploy --local-only
+```
+
+### Deploy a prebuilt image (Apple Silicon-safe)
+
+Fly machines run `linux/amd64`. Build and push a multi-arch image:
+
+```bash
+docker buildx build \
+    --platform linux/amd64,linux/arm64 \
+    -t raysinghdev/stat-arb:latest \
+    --push .
+
+flyctl deploy --image raysinghdev/stat-arb:latest
+```
+
+### Lease lock recovery
+
+If deploy fails with `failed to acquire leases`, wait until the lease expiry in the error and retry, or inspect/stop the machine:
+
+```bash
+flyctl machines list -a regime-pairs
+flyctl machines stop <machine-id> -a regime-pairs
+```

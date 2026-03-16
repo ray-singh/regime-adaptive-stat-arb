@@ -3,3 +3,16 @@ fly.toml
 __pycache__/
 .envrc
 .venv/
+.venv_new/
+**/__pycache__/
+**/*.pyc
+node_modules/
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
+data/cache/
+cache/
+cache_factset/
+notebooks/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
