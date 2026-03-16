@@ -229,6 +229,7 @@ export default function App() {
   const [networkData,       setNetworkData]       = useState(null);
   const [networkRegime,     setNetworkRegime]     = useState("");
   const [topPairsRegimeFilter, setTopPairsRegimeFilter] = useState("");
+  const [showAllPairs, setShowAllPairs] = useState(false);
   const [spreadViewMode,       setSpreadViewMode]       = useState("z"); // "z" | "spread"
 
   const applyScenario = (s) => {
@@ -399,6 +400,10 @@ export default function App() {
     }));
   }, [rankedPairs, pairsByRegime, topPairsRegimeFilter]);
 
+  // Limit used by the Top Pairs panel; default top-N when not showing all
+  const TOP_PAIRS_DEFAULT = 20;
+  const displayedLimit = showAllPairs ? (displayedPairs || []).length : TOP_PAIRS_DEFAULT;
+
 
   // Color-stop stripes behind equity curve (rendered as SVG linear gradient segments)
   // We mark regime changes so they can be rendered as reference areas.
@@ -546,6 +551,9 @@ export default function App() {
                     </select>
                   </label>
                   <span className="stat-badge">{(displayedPairs || []).length} pairs</span>
+                  <button className="ghost-button" onClick={() => setShowAllPairs((s) => !s)} style={{ marginLeft: 8 }}>
+                    {showAllPairs ? `Show Top ${TOP_PAIRS_DEFAULT}` : "Show All"}
+                  </button>
                 </div>
               </div>
           <div className="table-wrap">
@@ -563,7 +571,7 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {displayedPairs.slice(0, 30).map((p, i) => (
+                {displayedPairs.slice(0, displayedLimit).map((p, i) => (
                   <tr
                     key={p.pair_id}
                     onClick={() => onSelectPair(p.pair_id)}
@@ -629,9 +637,9 @@ export default function App() {
                 <p className="chart-subtitle">Click a bar to open its spread. Colour = stability.</p>
               </div>
             </div>
-            <ResponsiveContainer width="100%" height={Math.max(180, Math.min(displayedPairs.length, 18) * 26)}>
+            <ResponsiveContainer width="100%" height={Math.max(180, Math.min(displayedLimit, 18) * 26)}>
               <BarChart
-                data={[...displayedPairs].slice(0, 18).reverse().map((p) => ({ ...p, displayScore: Number(p.score ?? 0) }))}
+                data={[...displayedPairs].slice(0, Math.min(displayedLimit, 18)).reverse().map((p) => ({ ...p, displayScore: Number(p.score ?? 0) }))}
                 layout="vertical"
                 margin={{ top: 0, right: 36, bottom: 0, left: 82 }}
                 onClick={(d) => d?.activePayload?.[0] && onSelectPair(d.activePayload[0].payload.pair_id)}
@@ -650,8 +658,8 @@ export default function App() {
                     ];
                   }}
                 />
-                <Bar dataKey="displayScore" radius={[0, 4, 4, 0]} cursor="pointer" isAnimationActive={false}>
-                  {[...displayedPairs].slice(0, 18).reverse().map((p, i) => (
+                  <Bar dataKey="displayScore" radius={[0, 4, 4, 0]} cursor="pointer" isAnimationActive={false}>
+                  {[...displayedPairs].slice(0, Math.min(displayedLimit, 18)).reverse().map((p, i) => (
                     <Cell
                       key={`sc-${i}`}
                       fill={p.stability_label === "high" ? "#51cf66" : p.stability_label === "medium" ? "#ffd166" : "#ff8fa3"}
@@ -679,7 +687,7 @@ export default function App() {
                 <p className="chart-subtitle">Bubble size = active regimes. Click to explore spread.</p>
               </div>
             </div>
-            <ResponsiveContainer width="100%" height={Math.max(180, Math.min(displayedPairs.length, 18) * 26)}>
+            <ResponsiveContainer width="100%" height={Math.max(180, Math.min(displayedLimit, 18) * 26)}>
               <ScatterChart margin={{ top: 10, right: 24, bottom: 28, left: 10 }}>
                 <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.04)" />
                 <XAxis
@@ -708,7 +716,7 @@ export default function App() {
                   <Scatter
                     key={stab}
                     name={`${stab[0].toUpperCase()}${stab.slice(1)} stability`}
-                    data={displayedPairs.filter((p) => (p.stability_label ?? "low") === stab && p.best_half_life_days != null)}
+                    data={displayedPairs.slice(0, displayedLimit).filter((p) => (p.stability_label ?? "low") === stab && p.best_half_life_days != null)}
                     fill={stab === "high" ? "#51cf66" : stab === "medium" ? "#ffd166" : "#ff8fa3"}
                     opacity={0.85}
                     cursor="pointer"
