@@ -29,6 +29,8 @@ COPY . /app
 RUN python -m pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir --prefer-binary -r requirements.runtime.txt
 
+RUN mkdir -p /data/cache
+
 # Copy the repository into the image (backend expects repo root relative imports)
 
 EXPOSE 5001

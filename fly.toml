@@ -1,13 +1,15 @@
-# fly.toml app configuration file generated for regime-adaptive-stat-arb on 2026-03-16T02:28:41-04:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
 app = 'regime-pairs'
 primary_region = 'ord'
 
 [build]
   dockerfile = "dashboard/backend/Dockerfile"
+
+[mounts]
+  source = "cache_data"
+  destination = "/data/cache"
+
+[env]
+  CACHE_DIR = "/data/cache"
 
 [http_service]
   internal_port = 5001

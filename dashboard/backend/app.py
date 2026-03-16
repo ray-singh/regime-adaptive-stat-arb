@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
-
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -26,10 +25,11 @@ SRC_DIR = os.path.join(ROOT_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
+CACHE_DIR = Path(os.environ.get("CACHE_DIR", os.path.join(ROOT_DIR, "data", "cache")))
+
 import logging
 import numpy as np
 import pandas as pd
-
 from config import PlatformConfig, setup_logging
 from backtest.job_queue import BacktestJobQueue, JobStatus
 from strategy.kalman_hedge import KalmanHedge
