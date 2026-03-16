@@ -26,6 +26,7 @@ from .events import MarketEvent, SignalEvent
 from .portfolio import Portfolio
 from strategy.kalman_hedge import KalmanHedge
 from strategy.meta_signal import MetaSignalModel, MetaSignalConfig
+from utils.pair_id import make_pair_id
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class PairConfig:
         self.entry_z      = entry_z
         self.exit_z       = exit_z
         self.stop_z       = stop_z
-        self.pair_id      = f"{ticker1}/{ticker2}"
+        self.pair_id      = make_pair_id(ticker1, ticker2)
         self.position: int = 0   # -1 / 0 / +1
         # Kalman filter for dynamic hedge ratio estimation
         self.kalman_hedge = KalmanHedge(initial_hedge=hedge_ratio, process_variance=0.0001)

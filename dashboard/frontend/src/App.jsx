@@ -229,8 +229,10 @@ export default function App() {
   const [networkData,       setNetworkData]       = useState(null);
   const [networkRegime,     setNetworkRegime]     = useState("");
   const [topPairsRegimeFilter, setTopPairsRegimeFilter] = useState("");
+  const [topPairsSortBy, setTopPairsSortBy] = useState("score"); // "score" | "stability"
   const [showAllPairs, setShowAllPairs] = useState(false);
   const [spreadViewMode,       setSpreadViewMode]       = useState("z"); // "z" | "spread"
+  const [spreadHedgeMode,      setSpreadHedgeMode]      = useState("kalman"); // "kalman" | "static"
 
   const applyScenario = (s) => {
     if (!s) { setActiveScenario(null); return; }
@@ -253,7 +255,7 @@ export default function App() {
       const res = await runDiscovery({
         tickers: tickersPayload,
         nStates: Math.max(4, Number(controls.nStates) || 4),
-        minRegimeBars: Number(controls.minRegimeBars) || 10,
+        minRegimeBars: Math.max(126, Number(controls.minRegimeBars) || 126),
       });
       if (!res.ok) { setDiscoveryError(res.error || "Discovery failed"); setDiscoveryRunning(false); return; }
       // Poll until done
@@ -275,6 +277,7 @@ export default function App() {
   };
 
   const refreshDiscovery = async () => {
+    setNetworkRegime("");
     const [rp, pbr, net] = await Promise.all([
       getRankedPairs().catch(() => ({ ok: false, pairs: [] })),
       getPairsByRegime().catch(() => ({ ok: false, byRegime: {} })),
@@ -283,6 +286,7 @@ export default function App() {
     if (rp.ok)  setRankedPairs(rp.pairs || []);
     if (pbr.ok) setPairsByRegime(pbr.byRegime || {});
     if (net.ok) setNetworkData({ nodes: net.nodes || [], edges: net.edges || [] });
+    else setNetworkData({ nodes: [], edges: [] });
   };
 
   const onSelectPair = async (pairId) => {
@@ -290,17 +294,34 @@ export default function App() {
     setPairSpread(null);
     setSpreadViewMode("z");
     try {
-      const res = await getPairSpread(pairId);
+      const res = await getPairSpread(pairId, spreadHedgeMode);
       if (res.ok) setPairSpread(res);
     } catch { /* ignore */ }
   };
+
+  useEffect(() => {
+    if (!selectedPair) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getPairSpread(selectedPair, spreadHedgeMode);
+        if (!cancelled && res.ok) setPairSpread(res);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedPair, spreadHedgeMode]);
 
   const onNetworkRegimeChange = async (regime) => {
     setNetworkRegime(regime);
     try {
       const res = await getNetworkGraph(regime !== "" ? regime : undefined);
       if (res.ok) setNetworkData({ nodes: res.nodes || [], edges: res.edges || [] });
-    } catch { /* ignore */ }
+      else setNetworkData({ nodes: [], edges: [] });
+    } catch {
+      setNetworkData({ nodes: [], edges: [] });
+    }
   };
 
   const refreshData = async () => {
@@ -333,6 +354,7 @@ export default function App() {
   };
 
   useEffect(() => { refreshData(); }, []);
+  useEffect(() => { refreshDiscovery(); }, []);
   useEffect(() => {
     window.localStorage.setItem("dashboard_controls", JSON.stringify(controls));
   }, [controls]);
@@ -358,8 +380,9 @@ export default function App() {
       });
     });
 
+    let basePairs;
     if (!topPairsRegimeFilter) {
-      return (rankedPairs || []).map((p, i) => {
+      basePairs = (rankedPairs || []).map((p, i) => {
         // Prefer directly-embedded stable/unstable lists from the ranking payload
         // (covers ALL pairs, not just the top-20 per regime in pairsByRegime).
         // Fall back to the activeMap derived from pairsByRegime, then to empty.
@@ -376,6 +399,7 @@ export default function App() {
           pair_id: p.pair_id,
           rank: p.rank ?? i + 1,
           score: p.score ?? 0,
+          stability_score: p.stability_score ?? 0,
           stability_label: p.stability_label ?? "—",
           regime_sensitive: !!p.regime_sensitive,
           best_half_life_days: p.best_half_life_days,
@@ -384,21 +408,30 @@ export default function App() {
           active_regimes,
         };
       });
+    } else {
+      const arr = pairsByRegime?.[topPairsRegimeFilter] || [];
+      basePairs = arr.map((p, i) => ({
+        pair_id: p.pair_id,
+        rank: i + 1,
+        score: p.score ?? 0,
+        stability_score: p.stability_score ?? 0,
+        stability_label: p.stability_label ?? "—",
+        regime_sensitive: !!p.regime_sensitive,
+        best_half_life_days: p.half_life_days ?? p.best_half_life_days,
+        best_coint_pvalue: p.coint_pvalue ?? p.best_coint_pvalue,
+        n_regimes_active: (activeMap[p.pair_id]?.length) ?? p.n_regimes_active ?? 0,
+        active_regimes: activeMap[p.pair_id] || [Number(topPairsRegimeFilter)],
+      }));
     }
 
-    const arr = pairsByRegime?.[topPairsRegimeFilter] || [];
-    return arr.map((p, i) => ({
-      pair_id: p.pair_id,
-      rank: i + 1,
-      score: p.score ?? 0,
-      stability_label: p.stability_label ?? "—",
-      regime_sensitive: !!p.regime_sensitive,
-      best_half_life_days: p.half_life_days ?? p.best_half_life_days,
-      best_coint_pvalue: p.coint_pvalue ?? p.best_coint_pvalue,
-      n_regimes_active: (activeMap[p.pair_id]?.length) ?? p.n_regimes_active ?? 0,
-      active_regimes: activeMap[p.pair_id] || [Number(topPairsRegimeFilter)],
-    }));
-  }, [rankedPairs, pairsByRegime, topPairsRegimeFilter]);
+    const sorted = [...basePairs].sort((a, b) => {
+      if (topPairsSortBy === "stability") {
+        return Number(b.stability_score ?? 0) - Number(a.stability_score ?? 0);
+      }
+      return Number(b.score ?? 0) - Number(a.score ?? 0);
+    });
+    return sorted.map((p, i) => ({ ...p, rank: i + 1 }));
+  }, [rankedPairs, pairsByRegime, topPairsRegimeFilter, topPairsSortBy]);
 
   // Limit used by the Top Pairs panel; default top-N when not showing all
   const TOP_PAIRS_DEFAULT = 20;
@@ -548,6 +581,17 @@ export default function App() {
                       {Object.keys(REGIME_META).sort((a,b) => Number(a) - Number(b)).map((r) => (
                         <option key={r} value={r}>{`${REGIME_META[Number(r)]?.label ?? `Regime ${r}`} (${(pairsByRegime?.[r]?.length) ?? 0})`}</option>
                       ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    Sort:
+                    <select
+                      value={topPairsSortBy}
+                      onChange={(e) => setTopPairsSortBy(e.target.value)}
+                      style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 6, color: "#e0eaf0", padding: "4px 8px" }}
+                    >
+                      <option value="score">Score</option>
+                      <option value="stability">Stability Score</option>
                     </select>
                   </label>
                   <span className="stat-badge">{(displayedPairs || []).length} pairs</span>
@@ -737,10 +781,27 @@ export default function App() {
               <h3>Pair Explorer — {selectedPair}</h3>
               <p className="chart-subtitle">
                 {spreadViewMode === "z" ? "Z-score with regime bands and ±2σ entry / exit thresholds." : "Raw spread value with regime overlays."}
-                {pairSpread && ` Hedge ratio: ${Number(pairSpread.hedge_ratio).toFixed(4)}`}
+                {pairSpread && ` Hedge: ${pairSpread.hedge_mode === "kalman" ? "Kalman (strategy-consistent)" : "Static OLS"}.`}
+                {pairSpread && ` Current hedge ratio: ${Number(pairSpread.hedge_ratio).toFixed(4)}`}
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ display: "flex", gap: 4 }}>
+                {["kalman", "static"].map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setSpreadHedgeMode(mode)}
+                    style={{
+                      padding: "3px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                      background: spreadHedgeMode === mode ? "rgba(255,209,102,0.16)" : "transparent",
+                      border: `1px solid ${spreadHedgeMode === mode ? "#ffd166" : "rgba(255,255,255,0.1)"}`,
+                      color: spreadHedgeMode === mode ? "#ffd166" : "#98a6b3",
+                    }}
+                  >
+                    {mode === "kalman" ? "Kalman Hedge" : "Static Hedge"}
+                  </button>
+                ))}
+              </div>
               <div style={{ display: "flex", gap: 4 }}>
                 {["z", "spread"].map((mode) => (
                   <button
@@ -944,7 +1005,7 @@ export default function App() {
       )}
 
       {/* ── Network View (spec — optional, nodes=assets, edges=strong pairs) ── */}
-      {networkData && networkData.nodes.length > 0 && (
+      {networkData && (
         <section className="card full-width">
           <div className="chart-header">
             <div>
@@ -961,13 +1022,19 @@ export default function App() {
                 style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, color: "#e0eaf0", padding: "4px 8px" }}
               >
                 <option value="">All</option>
-                {Object.keys(REGIME_META).sort((a,b) => Number(a) - Number(b)).map((r) => (
+                {Object.keys(pairsByRegime || {}).sort((a,b) => Number(a) - Number(b)).map((r) => (
                   <option key={r} value={r}>{`${REGIME_META[Number(r)]?.label ?? `Regime ${r}`} (${(pairsByRegime?.[r]?.length) ?? 0})`}</option>
                 ))}
               </select>
             </label>
           </div>
-          <NetworkGraph nodes={networkData.nodes} edges={networkData.edges} onSelectPair={onSelectPair} />
+          {networkData.nodes.length > 0 ? (
+            <NetworkGraph nodes={networkData.nodes} edges={networkData.edges} onSelectPair={onSelectPair} />
+          ) : (
+            <p className="chart-subtitle" style={{ paddingTop: 8 }}>
+              No network data available for the current discovery run{networkRegime ? " and selected regime filter" : ""}.
+            </p>
+          )}
         </section>
       )}
 

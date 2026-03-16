@@ -23,6 +23,7 @@ from typing import Optional
 
 from backtest.events import OrderEvent, Direction
 from backtest.portfolio import Portfolio
+from utils.pair_id import split_pair_id
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +289,7 @@ class RiskManager:
         if not order.pair_id:
             return True  # no pair tracking for this order
 
-        pair_tickers = order.pair_id.split("/")
+        pair_tickers = split_pair_id(order.pair_id)
         pair_notional = 0.0
         for t in pair_tickers:
             price = prices.get(t, portfolio.avg_cost.get(t, 0.0))
@@ -344,7 +345,7 @@ class RiskManager:
         # A pair is "open" if at least one of its legs is held
         still_open = set()
         for pid in self._open_pair_ids:
-            legs = pid.split("/")
+            legs = split_pair_id(pid)
             if any(t in open_tickers for t in legs):
                 still_open.add(pid)
         self._open_pair_ids = still_open

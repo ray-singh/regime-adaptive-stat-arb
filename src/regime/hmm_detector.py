@@ -89,6 +89,7 @@ class HMMRegimeDetector(BaseRegimeDetector):
         df: pd.DataFrame,
         min_train_years: int = 2,
         retrain_every_years: int = 1,
+        relabel_global: bool = True,
     ) -> pd.Series:
         """Generate look-ahead-free regime labels via walk-forward training (guide §3).
 
@@ -121,6 +122,7 @@ class HMMRegimeDetector(BaseRegimeDetector):
                 f"None of the required feature columns {self.feature_cols} found. "
                 f"Available: {list(df.columns)}"
             )
+        rv_col = next((c for c in wf_cols if "rv" in c.lower()), wf_cols[0])
 
         clean = df.dropna(subset=wf_cols).copy()
         n = len(clean)
@@ -218,24 +220,36 @@ class HMMRegimeDetector(BaseRegimeDetector):
         # Reindex to full df index so predict() can overlay directly
         labels_series = labels_series.reindex(pd.DatetimeIndex(df.index))
 
-        rv_col = next((c for c in ["avg_rv", "rv_20"] if c in df.columns), None)
-        if rv_col is not None:
+        if relabel_global:
             rv_aligned = df[rv_col].reindex(labels_series.index)
             valid_mask = labels_series.notna() & rv_aligned.notna()
             if valid_mask.any():
-                rebinned = self._relabel_by_global_rv_quantiles(rv_aligned[valid_mask])
+                rebinned = self._relabel_by_global_rv_quantiles(
+                    rv_aligned[valid_mask],
+                    rv_col=rv_col,
+                )
                 labels_series.loc[rebinned.index] = rebinned.astype(float)
                 logger.info(
                     "Applied global RV relabeling on walk-forward labels using '%s' (%d points)",
                     rv_col,
                     int(valid_mask.sum()),
                 )
-        else:
+            else:
+                logger.warning(
+                    "Global RV relabel requested but no valid RV points found using column '%s'.",
+                    rv_col,
+                )
+
+        present = labels_series.dropna().astype(int)
+        distinct = sorted(present.unique().tolist())
+        if len(distinct) != self.n_states:
             logger.warning(
-                "No realized-vol column found for global walk-forward relabeling; "
-                "available columns=%s",
-                list(df.columns),
+                "Walk-forward regime output has %d distinct labels (expected %d): %s",
+                len(distinct), self.n_states, distinct,
             )
+        empty_states = [s for s in range(self.n_states) if s not in set(distinct)]
+        if empty_states:
+            logger.warning("Empty regimes after walk-forward labeling: %s", empty_states)
 
         self._walkforward_labels = labels_series
         logger.info(
@@ -369,7 +383,7 @@ class HMMRegimeDetector(BaseRegimeDetector):
         order = np.argsort(means_scaled)   # ascending vol -> state 0 = lowest
         self._label_map = {raw: sorted_idx for sorted_idx, raw in enumerate(order)}
 
-    def _relabel_by_global_rv_quantiles(self, rv_series: pd.Series) -> pd.Series:
+    def _relabel_by_global_rv_quantiles(self, rv_series: pd.Series, rv_col: str | None = None) -> pd.Series:
         """Map RV values to stable regime integers via global quantiles.
 
         For 4-state models, use a dedicated crisis bucket at top 10% RV:

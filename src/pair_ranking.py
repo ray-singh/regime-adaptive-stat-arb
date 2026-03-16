@@ -12,8 +12,11 @@ Scores pairs by "interestingness" using three criteria:
   mean_reversion_str   = 1 / best_half_life_days  (normalised to [0, 1])
                          High → spread reverts quickly.
 
-Final score (spec formula):
-    score = w_regime_var * regime_sensitivity + w_mr * mean_reversion_str
+Final score (composite):
+    score =
+        w_stability * stability_score +
+        w_regime_sensitivity * regime_sensitivity +
+        w_mean_reversion * mean_reversion_str
 
 Stability score is also reported so the dashboard can display both.
 
@@ -57,10 +60,12 @@ class PairRankingEngine:
 
     def __init__(
         self,
-        w_regime_sensitivity: float = 0.6,
-        w_mean_reversion: float = 0.4,
+        w_stability: float = 0.4,
+        w_regime_sensitivity: float = 0.35,
+        w_mean_reversion: float = 0.25,
         max_half_life_days: float = 126.0,
     ):
+        self.w_stability = w_stability
         self.w_regime_sensitivity = w_regime_sensitivity
         self.w_mean_reversion = w_mean_reversion
         self.max_half_life_days = max_half_life_days
@@ -106,7 +111,8 @@ class PairRankingEngine:
 
         # --- final score (spec §6) ---
         df["score"] = (
-            self.w_regime_sensitivity * df["regime_sensitivity"]
+            self.w_stability * df["stability_score"]
+            + self.w_regime_sensitivity * df["regime_sensitivity"]
             + self.w_mean_reversion * df["mean_reversion_str"]
         ).round(4)
 

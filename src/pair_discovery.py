@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from strategy.pairs_trading import PairsSelector
+from utils.pair_id import make_pair_id
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +53,13 @@ class PairDiscoveryEngine:
         min_half_life: int = 5,
         max_half_life: int = 126,
         max_pairs_per_regime: int = 50,
-        min_regime_bars: int = 30,
+        min_regime_bars: int = 126,
     ):
         self.pvalue_threshold = pvalue_threshold
         self.min_half_life = min_half_life
         self.max_half_life = max_half_life
         self.max_pairs_per_regime = max_pairs_per_regime
-        self.min_regime_bars = min_regime_bars
+        self.min_regime_bars = max(126, int(min_regime_bars))
 
 
         self._selector = PairsSelector(
@@ -130,6 +131,14 @@ class PairDiscoveryEngine:
                 logger.info(
                     "Regime %s: only %d bars (< %d required) — skipping.",
                     regime_id, n_bars, self.min_regime_bars,
+                )
+                return None
+            if n_bars < 60:
+                logger.warning(
+                    "Regime %s: %d bars is below the minimum required for cointegration testing (60). "
+                    "No pairs will be discovered.",
+                    regime_id,
+                    n_bars,
                 )
                 return None
 
@@ -235,7 +244,7 @@ class PairDiscoveryEngine:
         """Create a canonical pair_id string 'AAAA–BBBB' (alphabetical order)."""
         df = df.copy()
         df["pair_id"] = df.apply(
-            lambda r: f"{min(r['ticker1'], r['ticker2'])}–{max(r['ticker1'], r['ticker2'])}",
+            lambda r: make_pair_id(r["ticker1"], r["ticker2"]),
             axis=1,
         )
         return df

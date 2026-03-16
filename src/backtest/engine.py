@@ -21,6 +21,7 @@ from .events import EventType, MarketEvent, SignalEvent, OrderEvent, FillEvent
 from .data_feed import HistoricalDataFeed
 from .execution import SimulatedBroker
 from .portfolio import Portfolio
+from utils.pair_id import make_pair_id
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,7 @@ def default_position_sizer(
 
     t1, t2  = signal.ticker1, signal.ticker2
     hr      = signal.hedge_ratio
-    pair_id = f"{t1}/{t2}"
+    pair_id = make_pair_id(t1, t2)
 
     equity  = portfolio.total_equity(prices)
     target  = equity * target_notional_pct * signal.strength

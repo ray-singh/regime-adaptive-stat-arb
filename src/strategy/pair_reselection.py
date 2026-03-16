@@ -25,6 +25,7 @@ from typing import Optional, List
 import pandas as pd
 
 from strategy.pairs_trading import PairsSelector
+from utils.pair_id import make_pair_id, split_pair_id
 
 logger = logging.getLogger(__name__)
 
@@ -152,16 +153,25 @@ class PairReSelector:
                         self._reselection_count, bar_count)
             return new_pairs_df, set(), set()
 
-        # Vectorized set construction — avoids per-row Python overhead of iterrows
-        new_pair_ids = set(new_pairs_df["ticker1"] + "/" + new_pairs_df["ticker2"])
+        new_pair_ids = set(
+            new_pairs_df[["ticker1", "ticker2"]]
+            .apply(lambda r: make_pair_id(r.ticker1, r.ticker2), axis=1)
+            .tolist()
+        )
 
-        added = new_pair_ids - current_pair_ids
-        removed = current_pair_ids - new_pair_ids
+        normalized_current = set()
+        for pid in current_pair_ids:
+            parts = split_pair_id(pid)
+            if len(parts) == 2:
+                normalized_current.add(make_pair_id(parts[0], parts[1]))
+
+        added = new_pair_ids - normalized_current
+        removed = normalized_current - new_pair_ids
 
         logger.info(
             "Pair re-selection #%d at bar %d: kept=%d, added=%d, removed=%d",
             self._reselection_count, bar_count,
-            len(new_pair_ids & current_pair_ids), len(added), len(removed),
+            len(new_pair_ids & normalized_current), len(added), len(removed),
         )
 
         return new_pairs_df, added, removed

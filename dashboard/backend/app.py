@@ -27,9 +27,13 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 import logging
+import numpy as np
+import pandas as pd
 
 from config import PlatformConfig, setup_logging
 from backtest.job_queue import BacktestJobQueue, JobStatus
+from strategy.kalman_hedge import KalmanHedge
+from utils.pair_id import make_pair_id, split_pair_id
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +98,18 @@ def _get_hmm_cache_key(tickers: list, start_date: str, end_date: Optional[str], 
     return hashlib.md5(key_str.encode()).hexdigest()
 
 
-def _get_pairs_cache_key(tickers: list, regime_series_hash: str, min_regime_bars: int) -> str:
+def _get_pairs_cache_key(
+    tickers: list,
+    start_date: str,
+    end_date: Optional[str],
+    regime_series_hash: str,
+    min_regime_bars: int,
+) -> str:
     """Generate a cache key for pair discovery results."""
     key_data = {
         "tickers": sorted(tickers),
+        "start_date": start_date,
+        "end_date": end_date or "",
         "regime_series_hash": regime_series_hash,
         "min_regime_bars": min_regime_bars,
     }
@@ -105,10 +117,18 @@ def _get_pairs_cache_key(tickers: list, regime_series_hash: str, min_regime_bars
     return hashlib.md5(key_str.encode()).hexdigest()
 
 
-def _get_ranking_cache_key(tickers: list, regime_series_hash: str, pair_summary_hash: str) -> str:
+def _get_ranking_cache_key(
+    tickers: list,
+    start_date: str,
+    end_date: Optional[str],
+    regime_series_hash: str,
+    pair_summary_hash: str,
+) -> str:
     """Generate a cache key for pair ranking results."""
     key_data = {
         "tickers": sorted(tickers),
+        "start_date": start_date,
+        "end_date": end_date or "",
         "regime_series_hash": regime_series_hash,
         "pair_summary_hash": pair_summary_hash,
     }
@@ -119,8 +139,32 @@ def _get_ranking_cache_key(tickers: list, regime_series_hash: str, pair_summary_
 def _compute_data_hash(data: Any) -> str:
     """Compute MD5 hash of serializable data (for cache invalidation)."""
     try:
-        import pickle
-        return hashlib.md5(pickle.dumps(data)).hexdigest()
+        if isinstance(data, pd.Series):
+            canonical = sorted(
+                (str(idx.date()) if hasattr(idx, "date") else str(idx), int(v))
+                for idx, v in data.dropna().items()
+            )
+            payload = json.dumps(canonical, separators=(",", ":"), sort_keys=False)
+            return hashlib.md5(payload.encode()).hexdigest()
+
+        if isinstance(data, pd.DataFrame):
+            df = data.sort_index().sort_index(axis=1)
+            rows = []
+            for record in df.reset_index().to_dict("records"):
+                norm = {}
+                for k, v in record.items():
+                    if isinstance(v, (np.integer, np.floating)):
+                        norm[k] = v.item()
+                    elif hasattr(v, "isoformat"):
+                        norm[k] = v.isoformat()
+                    else:
+                        norm[k] = v
+                rows.append(norm)
+            payload = json.dumps(rows, separators=(",", ":"), sort_keys=True)
+            return hashlib.md5(payload.encode()).hexdigest()
+
+        payload = json.dumps(data, default=str, separators=(",", ":"), sort_keys=True)
+        return hashlib.md5(payload.encode()).hexdigest()
     except Exception:
         return ""
 
@@ -204,7 +248,7 @@ def _run_discovery_pipeline(payload: dict) -> dict:
     end_date: Optional[str] = payload.get("endDate") or getattr(cfg.data, "end_date", None)
     n_states: int = int(payload.get("nStates") or getattr(cfg.regime, "n_states", 4) or 4)
     min_train_years: int = int(payload.get("minTrainYears") or 2)
-    min_regime_bars: int = int(payload.get("minRegimeBars") or 30)
+    min_regime_bars: int = max(126, int(payload.get("minRegimeBars") or 126))
 
     if not tickers:
         raise ValueError("No tickers configured. Pass 'tickers' in the request body or set DataConfig.tickers.")
@@ -250,7 +294,13 @@ def _run_discovery_pipeline(payload: dict) -> dict:
 
     # 4. Discover pairs per regime (with caching)
     regime_series_hash = _compute_data_hash(regime_series)
-    pairs_cache_key = _get_pairs_cache_key(tickers, regime_series_hash, min_regime_bars)
+    pairs_cache_key = _get_pairs_cache_key(
+        tickers=tickers,
+        start_date=start_date,
+        end_date=end_date,
+        regime_series_hash=regime_series_hash,
+        min_regime_bars=min_regime_bars,
+    )
     
     cached_pairs = _load_pairs_cache(pairs_cache_key, cache_dir)
     if cached_pairs is not None:
@@ -276,7 +326,13 @@ def _run_discovery_pipeline(payload: dict) -> dict:
 
     # 6. Rank pairs (with caching)
     pair_summary_hash = _compute_data_hash(pair_summary)
-    ranking_cache_key = _get_ranking_cache_key(tickers, regime_series_hash, pair_summary_hash)
+    ranking_cache_key = _get_ranking_cache_key(
+        tickers=tickers,
+        start_date=start_date,
+        end_date=end_date,
+        regime_series_hash=regime_series_hash,
+        pair_summary_hash=pair_summary_hash,
+    )
     
     cached_ranking = _load_ranking_cache(ranking_cache_key, cache_dir)
     if cached_ranking is not None:
@@ -878,13 +934,23 @@ def create_app() -> Flask:
         ranked_map = None
         if ranked is not None and not getattr(ranked, "empty", True):
             try:
-                ranked_map = dict((r["pair_id"], {"score": r.get("score"), "stability_label": r.get("stability_label")}) for r in ranked.reset_index(drop=True).to_dict("records"))
+                ranked_map = dict(
+                    (
+                        r["pair_id"],
+                        {
+                            "score": r.get("score"),
+                            "stability_score": r.get("stability_score"),
+                            "stability_label": r.get("stability_label"),
+                        },
+                    )
+                    for r in ranked.reset_index(drop=True).to_dict("records")
+                )
             except Exception:
                 ranked_map = None
 
         by_regime: dict[str, Any] = {}
         for regime, grp in pairs_df.groupby("regime"):
-            grp_out = grp.sort_values("coint_pvalue").head(20).reset_index(drop=True)
+            grp_out = grp.sort_values("coint_pvalue").reset_index(drop=True)
             # If we have ranking info, attach it to each row (non-destructive)
             if ranked_map is not None:
                 try:
@@ -906,7 +972,6 @@ def create_app() -> Flask:
     @app.get("/api/pairs/<path:pair_id>/spread")
     def pair_spread(pair_id: str) -> Any:
         """Return spread time series + regime overlay for a single pair (spec — Pair Explorer)."""
-        import pandas as pd
         with discovery_store.lock:
             result = discovery_store.result
         if result is None:
@@ -919,7 +984,16 @@ def create_app() -> Flask:
         if pairs_df is None or price_matrix is None:
             return jsonify({"ok": False, "error": "Discovery result incomplete"}), 500
 
-        row = pairs_df[pairs_df["pair_id"] == pair_id]
+        requested_mode = (request.args.get("hedge", "kalman") or "kalman").strip().lower()
+        hedge_mode = "static" if requested_mode == "static" else "kalman"
+
+        pair_lookup = pair_id
+        if "–" not in pair_lookup and "/" in pair_lookup:
+            legs = split_pair_id(pair_lookup)
+            if len(legs) == 2:
+                pair_lookup = make_pair_id(legs[0], legs[1])
+
+        row = pairs_df[pairs_df["pair_id"] == pair_lookup]
         if row.empty:
             return jsonify({"ok": False, "error": f"Pair {pair_id!r} not found"}), 404
 
@@ -931,15 +1005,51 @@ def create_app() -> Flask:
         if asset_a not in price_matrix.columns or asset_b not in price_matrix.columns:
             return jsonify({"ok": False, "error": "Tickers not in price matrix"}), 404
 
-        spread = (price_matrix[asset_a] - hedge_ratio * price_matrix[asset_b]).dropna()
+        pair_prices = price_matrix[[asset_a, asset_b]].dropna()
+        if pair_prices.empty:
+            return jsonify({"ok": False, "error": "No overlapping price history for pair"}), 404
+
+        if hedge_mode == "kalman":
+            kf = KalmanHedge(initial_hedge=hedge_ratio)
+            spread_records = []
+            for idx, vals in pair_prices.iterrows():
+                p_a = float(vals[asset_a])
+                p_b = float(vals[asset_b])
+                hedge_t, unc_t = kf.update(p_a, p_b)
+                spread_records.append({
+                    "date": str(idx.date()),
+                    "spread": float(p_a - hedge_t * p_b),
+                    "hedge": float(hedge_t),
+                    "uncertainty": float(unc_t),
+                })
+            spread = pd.Series([r["spread"] for r in spread_records], index=pair_prices.index)
+            hedge_ratio_out = float(spread_records[-1]["hedge"]) if spread_records else hedge_ratio
+        else:
+            spread = (pair_prices[asset_a] - hedge_ratio * pair_prices[asset_b]).dropna()
+            spread_records = [
+                {
+                    "date": str(idx.date()),
+                    "spread": float(v),
+                    "hedge": hedge_ratio,
+                    "uncertainty": None,
+                }
+                for idx, v in spread.items()
+            ]
+            hedge_ratio_out = hedge_ratio
+
         spread_mean = float(spread.mean())
         spread_std = float(spread.std())
         spread_z = (spread - spread_mean) / spread_std if spread_std > 0 else spread
 
-        spread_data = [
-            {"date": str(idx.date()), "spread": round(float(v), 6), "z": round(float(sz), 4)}
-            for idx, v, sz in zip(spread.index, spread.values, spread_z.values)
-        ]
+        spread_data = []
+        for rec, sz in zip(spread_records, spread_z.values):
+            spread_data.append({
+                "date": rec["date"],
+                "spread": round(float(rec["spread"]), 6),
+                "z": round(float(sz), 4),
+                "hedge": round(float(rec["hedge"]), 6),
+                "uncertainty": None if rec["uncertainty"] is None else round(float(rec["uncertainty"]), 6),
+            })
 
         regime_data: list = []
         if regime_series is not None:
@@ -951,10 +1061,12 @@ def create_app() -> Flask:
 
         return jsonify({
             "ok": True,
-            "pair_id": pair_id,
+            "pair_id": pair_lookup,
             "asset_A": asset_a,
             "asset_B": asset_b,
-            "hedge_ratio": hedge_ratio,
+            "hedge_mode": hedge_mode,
+            "hedge_ratio": hedge_ratio_out,
+            "static_hedge_ratio": hedge_ratio,
             "spread_mean": spread_mean,
             "spread_std": spread_std,
             "spread": spread_data,

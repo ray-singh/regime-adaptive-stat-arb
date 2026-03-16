@@ -81,8 +81,9 @@ export async function getPairsByRegime() {
   return response.json();
 }
 
-export async function getPairSpread(pairId) {
-  const response = await fetch(`${API_BASE}/api/pairs/${encodeURIComponent(pairId)}/spread`);
+export async function getPairSpread(pairId, hedgeMode = "kalman") {
+  const mode = hedgeMode === "static" ? "static" : "kalman";
+  const response = await fetch(`${API_BASE}/api/pairs/${encodeURIComponent(pairId)}/spread?hedge=${mode}`);
   return response.json();
 }
 
