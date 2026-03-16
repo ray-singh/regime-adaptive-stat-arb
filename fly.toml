@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for regime-adaptive-stat-arb on 2026-03-16T02:28:41-04:00
+# fly.toml app configuration file generated for regime-pairs on 2026-03-16T19:11:32Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'regime-adaptive-stat-arb'
-primary_region = 'ord'
+app = 'regime-pairs'
+primary_region = 'iad'
 
 [build]
 
@@ -17,6 +17,7 @@ primary_region = 'ord'
   processes = ['app']
 
 [[vm]]
-  memory = '2gb'
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 2048
+  memory_mb = 1024
