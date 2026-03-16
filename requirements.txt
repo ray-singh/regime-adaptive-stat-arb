@@ -14,8 +14,3 @@ scikit-learn>=1.2.0
 hmmlearn>=0.2.0
 joblib>=1.2.0
 pytest>=7.0.0
-pytest-cov>=3.0.0
-pytest-mock>=3.0.0
-pytest-asyncio>=0.20.0
-pytest-flask>=1.2.0
-oci-cli
