@@ -12,6 +12,10 @@
   --danger: #ff6b6b;
 }
 
+html {
+  font-size: 14px;
+}
+
 /* UI fonts: Inter for interface, Roboto Mono for monospace tables */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Mono:wght@400;700&display=swap');
 

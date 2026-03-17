@@ -520,8 +520,9 @@ export default function App() {
             Discover cointegrated asset pairs, analyse how relationships shift across market regimes,
             and explore the most statistically interesting pairs.
           </p>
+          <br/>
           <p className="subtitle">
-            <strong>Warning:</strong> Discovery pipeline duration depends on Fly.io VM availability, cache state, and the selected universe size. If Fly machines have recently restarted or the cache is empty, the service must re-download price data and recompute HMM/feature caches which can add many minutes to the run. Running on a large universe typically takes 10+ minutes under normal conditions and can take significantly longer after VM restarts. Use the "Show All" toggle in the Top Pairs Panel to view more than the default top-20 pairs per regime, but beware that showing too many pairs may cause browser performance issues.
+            <strong>Warning:</strong> Discovery pipeline duration depends on VM availability, cache state, and selected universe size. If machines have recently restarted or cache is empty, the service must re-download price data and recompute HMM/feature caches, which can take 10+ minutes to run.
           </p>          
         </div>
         <div className="hero-actions">
@@ -550,9 +551,6 @@ export default function App() {
               {discoveryRunning ? "Discovering…" : "▶ Run Discovery"}
             </button>
           </div>
-          {rankedPairs.length > 0 && (
-            <button className="ghost-button" onClick={refreshDiscovery}>⟳ Refresh</button>
-          )}
         </div>
         {discoveryError && <p className="error-text" style={{ marginTop: 10 }}>⚠ {discoveryError}</p>}
         {discoveryRunning && (
