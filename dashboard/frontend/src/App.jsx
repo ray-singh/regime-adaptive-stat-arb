@@ -41,6 +41,8 @@ import {
 } from "./api";
 
 import { REGIME_META, DEFAULT_CONTROLS } from "./controls";
+// Link to upstream repository (opens in new tab)
+const GITHUB_REPO_URL = "https://github.com/ray-singh/regime-adaptive-stat-arb";
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function formatDateLabel(dateString) {
   const dt = new Date(dateString);
@@ -549,6 +551,14 @@ export default function App() {
             )}
             <button className="run-button" onClick={onDiscover} disabled={discoveryRunning}>
               {discoveryRunning ? "Discovering…" : "▶ Run Discovery"}
+            </button>
+            <button
+              className="ghost-button"
+              onClick={() => window.open(GITHUB_REPO_URL, "_blank")}
+              title="Open project on GitHub"
+              style={{ marginLeft: 6 }}
+            >
+              GitHub
             </button>
           </div>
         </div>
