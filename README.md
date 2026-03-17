@@ -84,15 +84,6 @@ The dashboard numbers come from `PairDiscoveryEngine` → `RelationshipAnalyzer`
          │  Atomic submit/cancel (lock)  │
          └───────────────┬───────────────┘
                          │
-    ┌────────────────────▼────────────────────┐
-    │           Backtest Engine               │
-    │                                         │
-    │  MarketEvent → Strategy → SignalEvent   │
-    │      → RiskManager (pre-trade)          │
-    │      → SimulatedBroker (slippage +      │
-    │        spread + commission)             │
-    │      → FillEvent → Portfolio            │
-    └────────────────────┬────────────────────┘
                          │
     ┌────────────────────▼────────────────────┐
     │              Domain Layer               │

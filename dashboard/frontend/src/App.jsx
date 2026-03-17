@@ -22,7 +22,6 @@ import {
   ZAxis,
 } from "recharts";
 import {
-  getDrawdown,
   getEquity,
   getHealth,
   getHmmInfo,
@@ -33,9 +32,7 @@ import {
   getRankedPairs,
   getRegime,
   getRegimePerformance,
-  getRollingSharpe,
   getSummary,
-  getTradesWithPnL,
   runDiscovery,
   getDiscoveryStatus,
 } from "./api";
@@ -331,24 +328,14 @@ export default function App() {
       getHealth(),
       getSummary().catch(() => ({ ok: false })),
       getEquity().catch(() => ({ ok: false, equity: [] })),
-      getDrawdown().catch(() => ({ ok: false, drawdown: [] })),
-      getRollingSharpe(60).catch(() => ({ ok: false, rollingSharpe: [] })),
       getPairs().catch(() => ({ ok: false, pairs: [] })),
       getRegime().catch(() => ({ ok: false, regime: [] })),
       getRegimePerformance().catch(() => ({ ok: false, regimePerformance: [] })),
-      getTradesWithPnL(500).catch(() => ({ ok: false, trades: [], closedTrades: [] })),
       getHmmInfo().catch(() => ({ ok: false })),
     ]);
 
     setHealth(h);
     if (s.ok)   setSummary(s);
-    if (e.ok)   setEquity(e.equity || []);
-    if (dd.ok)  setDrawdown(dd.drawdown || []);
-    if (rs.ok)  setRollingSharpe(rs.rollingSharpe || []);
-    if (tp.ok)  {
-      setTrades(tp.trades || []);
-      setClosedTrades(tp.closedTrades || []);
-    }
     if (p.ok)   setPairs(p.pairs || []);
     if (reg.ok) setRegimeSeries(reg.regime || []);
     if (rp.ok)  setRegimePerf(rp.regimePerformance || []);
@@ -524,7 +511,7 @@ export default function App() {
           </p>
           <br/>
           <p className="subtitle">
-            <strong>Warning:</strong> Discovery pipeline duration depends on VM availability, cache state, and selected universe size. If machines have recently restarted or cache is empty, the service must re-download price data and recompute HMM/feature caches, which can take 10+ minutes to run.
+            <strong>Warning:</strong> Discovery pipeline duration depends on VM availability, cache state, and selected universe size. If machines have recently restarted or cache is empty, the service must re-download price data and recompute HMM/feature caches, which can take ~10 minutes to run.
           </p>          
         </div>
         <div className="hero-actions">
@@ -1052,7 +1039,6 @@ export default function App() {
       {/* ── Footer ── */}
       <footer className="status-footer">
         <span>API: {health?.ok ? "✓ Online" : "✗ Offline"}</span>
-        <span>Backtest running: {String(health?.running ?? false)}</span>
         <span>Has result: {String(health?.hasResult ?? false)}</span>
         {health?.lastError && <span className="footer-error">Last error: {health.lastError}</span>}
       </footer>
