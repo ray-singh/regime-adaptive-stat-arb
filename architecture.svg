@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1100 900" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', 'Fira Mono', 'Consolas', monospace">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L0,7 L8,3.5 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-blue" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L0,7 L8,3.5 z" fill="#6366f1"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L0,7 L8,3.5 z" fill="#10b981"/>
+    </marker>
+    <filter id="s" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#00000018"/>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="1100" height="900" fill="#f8fafc"/>
+
+  <!-- title -->
+  <text x="550" y="36" text-anchor="middle" font-size="17" font-weight="800" fill="#0f172a" letter-spacing="0.3">Regime-Adaptive Pair Discovery — Architecture</text>
+  <line x1="60" y1="46" x2="1040" y2="46" stroke="#e2e8f0" stroke-width="1.5"/>
+
+  <!-- ══════════════════════════════════════════
+       STAGE 1 — DATA INGESTION  (top-left)
+  ══════════════════════════════════════════ -->
+  <rect x="60" y="62" width="220" height="140" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.3" filter="url(#s)"/>
+  <text x="170" y="82" text-anchor="middle" font-size="10" font-weight="700" fill="#1e40af" letter-spacing="1">1 · DATA INGESTION</text>
+
+  <rect x="75" y="92" width="190" height="40" rx="5" fill="white" stroke="#93c5fd" stroke-width="1.2"/>
+  <text x="170" y="109" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">YFinanceClient</text>
+  <text x="170" y="124" text-anchor="middle" font-size="9.5" fill="#64748b">OHLCV · Parquet cache</text>
+
+  <rect x="75" y="144" width="190" height="40" rx="5" fill="white" stroke="#93c5fd" stroke-width="1.2"/>
+  <text x="170" y="161" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">Universe</text>
+  <text x="170" y="176" text-anchor="middle" font-size="9.5" fill="#64748b">Top-200 US equities · sectors</text>
+
+  <!-- arrow: data → features -->
+  <line x1="280" y1="132" x2="328" y2="132" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arr-blue)"/>
+  <text x="282" y="124" font-size="8.5" fill="#6366f1">price_matrix</text>
+
+  <!-- ══════════════════════════════════════════
+       STAGE 2 — FEATURE ENGINEERING  (top-center)
+  ══════════════════════════════════════════ -->
+  <rect x="330" y="62" width="220" height="140" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.3" filter="url(#s)"/>
+  <text x="440" y="82" text-anchor="middle" font-size="10" font-weight="700" fill="#1e40af" letter-spacing="1">2 · FEATURES</text>
+
+  <rect x="345" y="92" width="190" height="98" rx="5" fill="white" stroke="#93c5fd" stroke-width="1.2"/>
+  <text x="440" y="110" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">featurize.py</text>
+  <text x="440" y="125" text-anchor="middle" font-size="9.5" fill="#64748b">ret · logret · mom_w</text>
+  <text x="440" y="139" text-anchor="middle" font-size="9.5" fill="#64748b">rv_w · vov_w · z-score</text>
+  <text x="440" y="153" text-anchor="middle" font-size="9.5" fill="#64748b">avg_rv · ret_dispersion</text>
+  <text x="440" y="167" text-anchor="middle" font-size="9.5" fill="#64748b">index_momentum</text>
+
+  <!-- arrow: features → HMM -->
+  <line x1="550" y1="132" x2="598" y2="132" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arr-blue)"/>
+  <text x="552" y="124" font-size="8.5" fill="#6366f1">feature matrix</text>
+
+  <!-- ══════════════════════════════════════════
+       STAGE 3 — REGIME DETECTION  (top-right)
+  ══════════════════════════════════════════ -->
+  <rect x="600" y="62" width="440" height="140" rx="8" fill="#fdf4ff" stroke="#e9d5ff" stroke-width="1.3" filter="url(#s)"/>
+  <text x="820" y="82" text-anchor="middle" font-size="10" font-weight="700" fill="#6b21a8" letter-spacing="1">3 · REGIME DETECTION</text>
+
+  <rect x="615" y="92" width="195" height="98" rx="5" fill="white" stroke="#d8b4fe" stroke-width="1.2"/>
+  <text x="712" y="110" text-anchor="middle" font-size="11" font-weight="700" fill="#4c1d95">HMMRegimeDetector</text>
+  <text x="712" y="125" text-anchor="middle" font-size="9.5" fill="#64748b">Gaussian HMM · hmmlearn</text>
+  <text x="712" y="139" text-anchor="middle" font-size="9.5" fill="#64748b">Walk-forward training</text>
+  <text x="712" y="153" text-anchor="middle" font-size="9.5" fill="#64748b">No look-ahead bias</text>
+  <text x="712" y="167" text-anchor="middle" font-size="9.5" fill="#64748b">4 states auto-sorted by σ</text>
+
+  <rect x="825" y="92" width="200" height="98" rx="5" fill="white" stroke="#d8b4fe" stroke-width="1.2"/>
+  <text x="925" y="110" text-anchor="middle" font-size="11" font-weight="700" fill="#4c1d95">Regime Labels</text>
+  <text x="925" y="128" text-anchor="middle" font-size="10" fill="#7c3aed" font-weight="600">0 · Bull</text>
+  <text x="925" y="143" text-anchor="middle" font-size="10" fill="#2563eb" font-weight="600">1 · Neutral</text>
+  <text x="925" y="158" text-anchor="middle" font-size="10" fill="#d97706" font-weight="600">2 · Bear</text>
+  <text x="925" y="173" text-anchor="middle" font-size="10" fill="#dc2626" font-weight="600">3 · Crisis</text>
+
+  <line x1="810" y1="141" x2="823" y2="141" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+
+  <!-- ══════════════════════════════════════════
+       CENTRAL PIPELINE — PAIR DISCOVERY  (mid)
+  ══════════════════════════════════════════ -->
+
+  <!-- regime_series arrow down from HMM -->
+  <line x1="820" y1="202" x2="820" y2="258" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr-blue)"/>
+  <text x="826" y="235" font-size="8.5" fill="#7c3aed">regime_series</text>
+  <!-- price_matrix arrow down from data -->
+  <line x1="170" y1="202" x2="170" y2="258" stroke="#6366f1" stroke-width="1.7" marker-end="url(#arr-blue)"/>
+  <text x="176" y="235" font-size="8.5" fill="#6366f1">price_matrix</text>
+
+  <!-- big discovery box -->
+  <rect x="60" y="260" width="980" height="290" rx="10" fill="#fefce8" stroke="#fde68a" stroke-width="2" filter="url(#s)"/>
+  <text x="550" y="282" text-anchor="middle" font-size="11" font-weight="800" fill="#78350f" letter-spacing="1.2">REGIME-AWARE PAIR DISCOVERY PIPELINE</text>
+
+  <!-- step A: per-regime slicing -->
+  <rect x="80" y="294" width="185" height="108" rx="6" fill="white" stroke="#fbbf24" stroke-width="1.4" filter="url(#s)"/>
+  <text x="172" y="313" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">A · Regime Slicing</text>
+  <text x="172" y="329" text-anchor="middle" font-size="9.5" fill="#64748b">Partition price_matrix</text>
+  <text x="172" y="343" text-anchor="middle" font-size="9.5" fill="#64748b">by regime label</text>
+  <text x="172" y="358" text-anchor="middle" font-size="9.5" fill="#64748b">Separate date windows</text>
+  <text x="172" y="372" text-anchor="middle" font-size="9.5" fill="#64748b">per regime (0–3)</text>
+  <text x="172" y="390" text-anchor="middle" font-size="9" fill="#b45309" font-style="italic">pair_discovery.py</text>
+
+  <line x1="265" y1="348" x2="293" y2="348" stroke="#d97706" stroke-width="1.7" marker-end="url(#arr)"/>
+
+  <!-- step B: correlation filter -->
+  <rect x="295" y="294" width="185" height="108" rx="6" fill="white" stroke="#fbbf24" stroke-width="1.4" filter="url(#s)"/>
+  <text x="387" y="313" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">B · Corr Filter</text>
+  <text x="387" y="329" text-anchor="middle" font-size="9.5" fill="#64748b">Pearson correlation</text>
+  <text x="387" y="343" text-anchor="middle" font-size="9.5" fill="#64748b">within each regime slice</text>
+  <text x="387" y="358" text-anchor="middle" font-size="9.5" fill="#64748b">Keep |ρ| ≥ 0.70</text>
+  <text x="387" y="372" text-anchor="middle" font-size="9.5" fill="#64748b">Candidate pair reduction</text>
+  <text x="387" y="390" text-anchor="middle" font-size="9" fill="#b45309" font-style="italic">PairsSelector</text>
+
+  <line x1="480" y1="348" x2="508" y2="348" stroke="#d97706" stroke-width="1.7" marker-end="url(#arr)"/>
+
+  <!-- step C: cointegration -->
+  <rect x="510" y="294" width="185" height="108" rx="6" fill="white" stroke="#fbbf24" stroke-width="1.4" filter="url(#s)"/>
+  <text x="602" y="313" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">C · Cointegration</text>
+  <text x="602" y="329" text-anchor="middle" font-size="9.5" fill="#64748b">Engle-Granger test</text>
+  <text x="602" y="343" text-anchor="middle" font-size="9.5" fill="#64748b">p-value &lt; 0.05</text>
+  <text x="602" y="358" text-anchor="middle" font-size="9.5" fill="#64748b">OLS hedge ratio β</text>
+  <text x="602" y="372" text-anchor="middle" font-size="9.5" fill="#64748b">OU half-life 5–126 d</text>
+  <text x="602" y="390" text-anchor="middle" font-size="9" fill="#b45309" font-style="italic">statsmodels</text>
+
+  <line x1="695" y1="348" x2="723" y2="348" stroke="#d97706" stroke-width="1.7" marker-end="url(#arr)"/>
+
+  <!-- step D: relationship analysis -->
+  <rect x="725" y="294" width="295" height="108" rx="6" fill="white" stroke="#fbbf24" stroke-width="1.4" filter="url(#s)"/>
+  <text x="872" y="313" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">D · Relationship Analysis</text>
+  <text x="872" y="329" text-anchor="middle" font-size="9.5" fill="#64748b">Cross-regime corr stability  ·  Spread variance per regime</text>
+  <text x="872" y="343" text-anchor="middle" font-size="9.5" fill="#64748b">Regime sensitivity flag  (std(ρ) across regimes)</text>
+  <text x="872" y="358" text-anchor="middle" font-size="9.5" fill="#64748b">→ pair_regime_stats  ·  pair_summary</text>
+  <text x="872" y="390" text-anchor="middle" font-size="9" fill="#b45309" font-style="italic">relationship_analysis.py</text>
+
+  <!-- second row: output -->
+  <line x1="550" y1="402" x2="550" y2="420" stroke="#d97706" stroke-width="1.7" marker-end="url(#arr)"/>
+
+  <!-- step E: pair ranking -->
+  <rect x="200" y="422" width="700" height="110" rx="6" fill="white" stroke="#f59e0b" stroke-width="1.6" filter="url(#s)"/>
+  <text x="550" y="442" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">E · Pair Ranking  —  PairRankingEngine</text>
+
+  <!-- three score sub-boxes -->
+  <rect x="215" y="454" width="195" height="64" rx="4" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+  <text x="312" y="470" text-anchor="middle" font-size="10" font-weight="700" fill="#78350f">Stability Score ×0.40</text>
+  <text x="312" y="485" text-anchor="middle" font-size="9.5" fill="#64748b">Cross-regime corr variance</text>
+  <text x="312" y="499" text-anchor="middle" font-size="9.5" fill="#64748b">Consistency across regimes</text>
+
+  <rect x="452" y="454" width="195" height="64" rx="4" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+  <text x="549" y="470" text-anchor="middle" font-size="10" font-weight="700" fill="#78350f">Regime Sensitivity ×0.35</text>
+  <text x="549" y="485" text-anchor="middle" font-size="9.5" fill="#64748b">Pairs that behave differently</text>
+  <text x="549" y="499" text-anchor="middle" font-size="9.5" fill="#64748b">across Bull / Bear / Crisis</text>
+
+  <rect x="689" y="454" width="195" height="64" rx="4" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+  <text x="786" y="470" text-anchor="middle" font-size="10" font-weight="700" fill="#78350f">Mean Reversion ×0.25</text>
+  <text x="786" y="485" text-anchor="middle" font-size="9.5" fill="#64748b">OU half-life speed</text>
+  <text x="786" y="499" text-anchor="middle" font-size="9.5" fill="#64748b">Short half-life preferred</text>
+
+  <!-- ══════════════════════════════════════════
+       OUTPUTS (bottom row)
+  ══════════════════════════════════════════ -->
+  <line x1="550" y1="550" x2="550" y2="574" stroke="#475569" stroke-width="1.8" marker-end="url(#arr)"/>
+
+  <!-- output strip -->
+  <rect x="60" y="576" width="980" height="55" rx="8" fill="#f0fdf4" stroke="#86efac" stroke-width="1.4" filter="url(#s)"/>
+  <text x="550" y="595" text-anchor="middle" font-size="10.5" font-weight="700" fill="#14532d">RANKED PAIRS OUTPUT</text>
+  <text x="550" y="614" text-anchor="middle" font-size="9.5" fill="#374151">pair_id  ·  asset_A / asset_B  ·  regime  ·  coint_pvalue  ·  hedge_ratio β  ·  half_life_days  ·  composite_score</text>
+
+  <!-- ══════════════════════════════════════════
+       CONSUMERS (below output)
+  ══════════════════════════════════════════ -->
+
+  <!-- Backtest Engine -->
+  <line x1="220" y1="631" x2="220" y2="659" stroke="#475569" stroke-width="1.6" marker-end="url(#arr)"/>
+  <rect x="80" y="661" width="275" height="95" rx="7" fill="white" stroke="#94a3b8" stroke-width="1.3" filter="url(#s)"/>
+  <text x="217" y="681" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0f172a">Backtest Engine</text>
+  <text x="217" y="697" text-anchor="middle" font-size="9.5" fill="#64748b">Event-driven · regime-adaptive z thresholds</text>
+  <text x="217" y="711" text-anchor="middle" font-size="9.5" fill="#64748b">Kalman hedge · PairReSelector (63d)</text>
+  <text x="217" y="725" text-anchor="middle" font-size="9.5" fill="#64748b">RiskManager · SimulatedBroker</text>
+  <text x="217" y="740" text-anchor="middle" font-size="9.5" fill="#64748b">Portfolio · equity curve</text>
+
+  <!-- Spread Explorer -->
+  <line x1="550" y1="631" x2="550" y2="659" stroke="#475569" stroke-width="1.6" marker-end="url(#arr)"/>
+  <rect x="385" y="661" width="330" height="95" rx="7" fill="white" stroke="#94a3b8" stroke-width="1.3" filter="url(#s)"/>
+  <text x="550" y="681" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0f172a">Spread Explorer &amp; Network Graph</text>
+  <text x="550" y="697" text-anchor="middle" font-size="9.5" fill="#64748b">/api/pairs/&lt;id&gt;/spread  — z-score + regime overlay</text>
+  <text x="550" y="711" text-anchor="middle" font-size="9.5" fill="#64748b">/api/network  — ticker graph (edges = coint. strength)</text>
+  <text x="550" y="725" text-anchor="middle" font-size="9.5" fill="#64748b">/api/pairs/ranked  — sortable table</text>
+  <text x="550" y="740" text-anchor="middle" font-size="9.5" fill="#64748b">/api/pairs/by-regime  — grouped view</text>
+
+  <!-- Config -->
+  <line x1="880" y1="631" x2="880" y2="659" stroke="#475569" stroke-width="1.6" marker-end="url(#arr)"/>
+  <rect x="740" y="661" width="300" height="95" rx="7" fill="white" stroke="#94a3b8" stroke-width="1.3" filter="url(#s)"/>
+  <text x="890" y="681" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0f172a">PlatformConfig</text>
+  <text x="890" y="697" text-anchor="middle" font-size="9.5" fill="#64748b">Per-regime overrides: z_entry, z_exit</text>
+  <text x="890" y="711" text-anchor="middle" font-size="9.5" fill="#64748b">position_scale, max_open_pairs</text>
+  <text x="890" y="725" text-anchor="middle" font-size="9.5" fill="#64748b">leverage_cap, drawdown_halt</text>
+  <text x="890" y="740" text-anchor="middle" font-size="9.5" fill="#64748b">YAML · env vars · CLI overrides</text>
+
+  <!-- ══════════════════════════════════════════
+       LEGEND
+  ══════════════════════════════════════════ -->
+  <rect x="60" y="776" width="980" height="36" rx="6" fill="white" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="78" y="793" font-size="9.5" font-weight="700" fill="#374151">Legend:</text>
+  <line x1="128" y1="789" x2="164" y2="789" stroke="#6366f1" stroke-width="2" marker-end="url(#arr-blue)"/>
+  <text x="169" y="793" font-size="9.5" fill="#374151">data flow</text>
+  <line x1="245" y1="789" x2="281" y2="789" stroke="#d97706" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="286" y="793" font-size="9.5" fill="#374151">discovery pipeline steps</text>
+  <rect x="445" y="781" width="12" height="12" rx="2" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.2"/>
+  <text x="462" y="792" font-size="9.5" fill="#374151">input layers</text>
+  <rect x="546" y="781" width="12" height="12" rx="2" fill="#fefce8" stroke="#fde68a" stroke-width="1.5"/>
+  <text x="563" y="792" font-size="9.5" fill="#374151">core discovery pipeline</text>
+  <rect x="685" y="781" width="12" height="12" rx="2" fill="#f0fdf4" stroke="#86efac" stroke-width="1.2"/>
+  <text x="702" y="792" font-size="9.5" fill="#374151">ranked output</text>
+  <rect x="790" y="781" width="12" height="12" rx="2" fill="white" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="807" y="792" font-size="9.5" fill="#374151">downstream consumers</text>
+
+  <!-- caching callout -->
+  <rect x="60" y="824" width="980" height="32" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="550" y="844" text-anchor="middle" font-size="9.5" fill="#475569">
+    <tspan font-weight="700">Caching:</tspan>  HMM results · pair discovery · ranking all cached as TTL-7d pickle files keyed by MD5(params) — served from disk on cache hit, recomputed on miss
+  </text>
+</svg>

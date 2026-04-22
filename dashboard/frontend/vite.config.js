@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const BACKEND = process.env.BACKEND_URL || "https://regime-pairs.fly.dev";
+const BACKEND = process.env.BACKEND_URL || "https://localhost:5001";
 
 export default defineConfig({
   plugins: [react()],

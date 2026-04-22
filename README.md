@@ -16,13 +16,21 @@ A quantitative research system that combines unsupervised regime detection with 
 
 ---
 
+## Architecture
+![Architecture diagram](architecture.svg)
+**Concurrency model:** A module-level `ThreadPoolExecutor` is reused across cointegration test batches (GIL is released by numpy/statsmodels in hot paths). The job queue uses fine-grained locking with atomic `submit()` to eliminate the race where `cancel()` could observe a job with `_future = None`.
+
+**Caching:** Parquet files use the native PyArrow API with embedded Arrow schema to prevent silent dtype coercion on reload. HMM results, pair discovery, and pair ranking each have independent TTL-keyed cache files derived from MD5 hashes of their inputs.
+
+---
+
 ## Statistical & ML Methods
 
 | Component | Method | Notes |
 |---|---|---|
 | Regime detection | Gaussian HMM (`hmmlearn`) | Multivariate: avg_rv, ret_dispersion, index_momentum; states sorted by ascending realized vol for label stability |
 | Walk-forward training | Expanding-window HMM refit | Prevents look-ahead bias; fallback model uses basic features for online inference |
-| Cointegration testing | Engle-Granger (two-step OLS) | Correlation pre-filter (|r| ≥ 0.70) applied first to reduce O(n²) pair candidates |
+| Cointegration testing | Engle-Granger (two-step OLS) | Correlation pre-filter of abs(r) ≥ 0.70 applied first to reduce O(n²) pair candidates |
 | Hedge ratio | OLS with AR(1) residual fit | Ornstein-Uhlenbeck half-life estimated via AR(1) on spread differences |
 | Dynamic hedge ratio | Kalman filter (1D, random-walk state) | Online tracking of time-varying hedge; process variance controls regime responsiveness |
 | Signal generation | Rolling z-score ensemble | Combines z-score, spread momentum, and z-score-of-momentum with learned or fixed weights |
@@ -64,45 +72,6 @@ The dashboard numbers come from `PairDiscoveryEngine` → `RelationshipAnalyzer`
 | **Regime Bands** | Background color for detected market regime over time. | Regime series aligned to spread dates using forward fill, then segmented at regime transitions. |
 
 **Important:** If no pairs are discovered (for example, strict cointegration filters in sparse regimes), the Pair Explorer has no pair rows to open, so you may not see crisis periods there even when the HMM itself detects regime `3`.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  React + Recharts Dashboard  ◄──►  Flask REST API       │
-│  - Regime Timeline                - /discover (async)   │
-│  - Ranked Pair Browser            - /pairs/ranked       │
-│  - Spread Explorer                - /pairs/{id}/spread  │
-│  - Network Graph                  - /api/jobs (queue)   │
-└────────────────────────┬────────────────────────────────┘
-                         │
-         ┌───────────────▼───────────────┐
-         │  BacktestJobQueue             │
-         │  ThreadPoolExecutor, max=2    │
-         │  Atomic submit/cancel (lock)  │
-         └───────────────┬───────────────┘
-                         │
-                         │
-    ┌────────────────────▼────────────────────┐
-    │              Domain Layer               │
-    │  HMMRegimeDetector  PairDiscoveryEngine │
-    │  RelationshipAnalyzer  PairRankingEngine│
-    │  PairReSelector (periodic rescan)       │
-    └────────────────────┬────────────────────┘
-                         │
-    ┌────────────────────▼────────────────────┐
-    │               Data Layer                │
-    │  yfinance client  FeatureStore          │
-    │  PyArrow/Parquet cache (snappy)         │
-    │  TTL-based disk cache for HMM + pairs   │
-    └─────────────────────────────────────────┘
-```
-
-**Concurrency model:** A module-level `ThreadPoolExecutor` is reused across cointegration test batches (GIL is released by numpy/statsmodels in hot paths). The job queue uses fine-grained locking with atomic `submit()` to eliminate the race where `cancel()` could observe a job with `_future = None`.
-
-**Caching:** Parquet files use the native PyArrow API with embedded Arrow schema to prevent silent dtype coercion on reload. HMM results, pair discovery, and pair ranking each have independent TTL-keyed cache files derived from MD5 hashes of their inputs.
 
 ---
 

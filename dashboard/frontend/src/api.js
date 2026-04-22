@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.DEV ? "https://regime-pairs.fly.dev" : "";
+const API_BASE = import.meta.env.DEV ? "https://localhost:5001" : "";
 
 export async function getHealth() {
   const response = await fetch(`${API_BASE}/api/health`);
